@@ -17,7 +17,9 @@ This report documents the root causes, fixes, and prevention strategies for all 
 | Validation | VAL-208 | Critical | Fixed  |
 | Validation | VAL-202 | Critical | Fixed  |
 | Validation | VAL-206 | Critical | Fixed  |
+| Validation | VAL-207 | High    | Fixed  |
 | Validation | VAL-210 | High    | Fixed  |
+| Security | SEC-302 | High    | Fixed  |
 | Performance | PERF-408 | Critical | Fixed  |
 | Performance | PERF-406 | Critical | Fixed  |
 | Performance | PERF-405 | Critical | Fixed  |
@@ -1950,3 +1952,236 @@ To verify the fixes:
 6. Run test suite - all card validation tests should pass
 7. Verify invalid cards are rejected with clear error messages
 8. Verify valid cards from all types are accepted
+
+---
+
+# Bug Report: VAL-207, SEC-302 - Routing Number Validation and Insecure Random Numbers
+
+## Ticket Information
+
+- **Ticket IDs:** VAL-207, SEC-302
+- **Reporters:** Support Team, Security Team
+- **Priorities:** High, High
+- **Status:** Fixed
+
+## Summary
+
+Two related issues were identified and fixed:
+
+1. **VAL-207:** Bank transfers were being submitted without routing numbers, causing failed ACH transfers
+2. **SEC-302:** Account numbers generated using `Math.random()`, making them potentially predictable
+
+Both issues were fixed by implementing proper validation and using cryptographically secure random number generation.
+
+---
+
+## How the Bugs Were Found
+
+### Investigation Process
+
+1. **VAL-207: Routing Number Optional Investigation**
+   - Support team reports of failed ACH transfers
+   - Examined `server/routers/account.ts` line 82
+   - Found: `routingNumber: z.string().optional()` - routing number was optional in backend schema
+   - Frontend had validation (`required: "Routing number is required"`), but backend didn't enforce it
+   - Users could bypass frontend validation or API could be called directly without routing number
+   - Bank transfers without routing numbers would fail at ACH processing stage
+
+2. **SEC-302: Insecure Random Numbers Investigation**
+   - Security team audit identified use of `Math.random()` for account number generation
+   - Examined `server/routers/account.ts` line 9-13
+   - Found: `Math.floor(Math.random() * 1000000000)` used to generate account numbers
+   - `Math.random()` is not cryptographically secure and can be predictable
+   - Security risk: Account numbers could potentially be guessed or predicted
+   - Industry standard requires cryptographically secure random number generation for sensitive identifiers
+
+3. **Code Review Findings**
+   - Backend schema allowed optional routing number even for bank transfers
+   - No server-side validation to enforce routing number requirement
+   - Account number generation used insecure `Math.random()`
+   - Missing cryptographic security for sensitive identifiers
+
+4. **Verification**
+   - Tested bank transfer without routing number - confirmed it was accepted
+   - Reviewed account number generation - confirmed use of `Math.random()`
+   - All issues confirmed and reproducible
+
+---
+
+## Root Cause
+
+1. **VAL-207: Optional Routing Number in Backend**
+   - Zod schema defined `routingNumber: z.string().optional()` for all funding sources
+   - No conditional validation based on `type === "bank"`
+   - Frontend validation could be bypassed by direct API calls
+   - Server-side validation was missing, allowing invalid requests to proceed
+
+2. **SEC-302: Insecure Random Number Generation**
+   - `Math.random()` is a pseudo-random number generator (PRNG)
+   - Not cryptographically secure - predictable and not suitable for security-sensitive applications
+   - Account numbers are sensitive identifiers that should be unpredictable
+   - Industry best practice requires cryptographically secure random number generation (CSPRNG)
+
+---
+
+## Impact
+
+**VAL-207:**
+- **Failed ACH Transfers:** Bank transfers without routing numbers fail at processing stage
+- **Customer Frustration:** Users think transfer succeeded but it fails later
+- **Support Burden:** Increased support tickets for failed transfers
+- **Financial Risk:** Potential for incomplete or failed transactions
+
+**SEC-302:**
+- **Security Risk:** Account numbers could potentially be predicted or guessed
+- **Compliance Issues:** Does not meet security best practices for sensitive identifiers
+- **Attack Vector:** Potential for account enumeration or brute-force attacks
+- **Trust Issues:** Users expect secure, unpredictable account numbers
+
+---
+
+## Solution
+
+### Implementation
+
+1. **Fixed VAL-207: Routing Number Validation (`server/routers/account.ts`)**
+   - Added Zod `.refine()` validation to require routing number when `type === "bank"`
+   - Added server-side validation check in mutation handler
+   - Validates routing number format (exactly 9 digits)
+   - Returns clear error messages for missing or invalid routing numbers
+
+2. **Fixed SEC-302: Secure Random Number Generation (`server/routers/account.ts`)**
+   - Replaced `Math.random()` with `crypto.randomBytes()`
+   - Uses Node.js `crypto` module for cryptographically secure random number generation
+   - Generates 4 random bytes (32 bits) and converts to number
+   - Maintains same 10-digit format (padded with zeros)
+
+---
+
+### Technical Details
+
+**VAL-207 Fix:**
+- Before: `routingNumber: z.string().optional()` - optional for all types
+- After: Added `.refine()` validation requiring routing number when `type === "bank"`
+- Server-side check ensures routing number exists and is valid format
+- Frontend already had validation, now backend enforces it too
+
+**SEC-302 Fix:**
+- Before: `Math.floor(Math.random() * 1000000000)` - insecure PRNG
+- After: `crypto.randomBytes(4).readUInt32BE(0) % 1000000000` - cryptographically secure
+- Uses Node.js built-in `crypto` module (CSPRNG)
+- Maintains same output format (10-digit account numbers)
+
+**Before (Problematic Code):**
+```typescript
+// VAL-207: Optional routing number
+fundingSource: z.object({
+  type: z.enum(["card", "bank"]),
+  accountNumber: z.string(),
+  routingNumber: z.string().optional(), // ❌ Optional even for bank transfers
+}),
+
+// SEC-302: Insecure random number generation
+function generateAccountNumber(): string {
+  return Math.floor(Math.random() * 1000000000) // ❌ Not cryptographically secure
+    .toString()
+    .padStart(10, "0");
+}
+```
+
+**After (Fixed Code):**
+```typescript
+// VAL-207: Required routing number for bank transfers
+fundingSource: z
+  .object({
+    type: z.enum(["card", "bank"]),
+    accountNumber: z.string(),
+    routingNumber: z.string().optional(),
+  })
+  .refine(
+    (data) => {
+      if (data.type === "bank") {
+        return !!data.routingNumber && data.routingNumber.trim().length > 0;
+      }
+      return true;
+    },
+    {
+      message: "Routing number is required for bank transfers",
+      path: ["routingNumber"],
+    }
+  )
+  .refine(
+    (data) => {
+      if (data.type === "bank" && data.routingNumber) {
+        return /^\d{9}$/.test(data.routingNumber);
+      }
+      return true;
+    },
+    {
+      message: "Routing number must be exactly 9 digits",
+      path: ["routingNumber"],
+    }
+  ),
+
+// SEC-302: Cryptographically secure random number generation
+function generateAccountNumber(): string {
+  const randomBytes = crypto.randomBytes(4); // ✅ Cryptographically secure
+  const randomNumber = randomBytes.readUInt32BE(0);
+  const accountNum = randomNumber % 1000000000;
+  return accountNum.toString().padStart(10, "0");
+}
+
+// Additional server-side validation
+if (input.fundingSource.type === "bank") {
+  if (!input.fundingSource.routingNumber || input.fundingSource.routingNumber.trim().length === 0) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Routing number is required for bank transfers",
+    });
+  }
+  if (!/^\d{9}$/.test(input.fundingSource.routingNumber)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Routing number must be exactly 9 digits",
+    });
+  }
+}
+```
+
+---
+
+## Testing
+
+Test cases have been created in `tests/routing-and-security.test.ts` to verify:
+- Routing number is required for bank transfers
+- Routing number format validation (9 digits)
+- Routing number not required for card payments
+- Account numbers are generated using cryptographically secure random numbers
+- Account numbers are unique and unpredictable
+- Edge cases (empty routing number, invalid format) are handled
+
+**Run tests:**
+
+```bash
+npx tsx tests/routing-and-security.test.ts
+```
+
+---
+
+## Files Modified
+
+1. `server/routers/account.ts` - Fixed: Added routing number validation, replaced Math.random() with crypto.randomBytes()
+
+---
+
+## Verification
+
+To verify the fixes:
+1. **VAL-207:** Try bank transfer without routing number - should be rejected
+2. **VAL-207:** Try bank transfer with invalid routing number format - should be rejected
+3. **VAL-207:** Try bank transfer with valid routing number - should be accepted
+4. **VAL-207:** Try card payment - routing number should not be required
+5. **SEC-302:** Generate multiple account numbers - should be unpredictable and unique
+6. **SEC-302:** Verify account numbers use crypto.randomBytes() not Math.random()
+7. Run test suite - all routing and security tests should pass
+8. Verify routing number validation works on both frontend and backend

@@ -5,11 +5,20 @@ import { db, getRawDatabase } from "@/lib/db";
 import { accounts, transactions } from "@/lib/db/schema";
 import { eq, and, desc } from "drizzle-orm";
 import { validateCardNumber } from "@/lib/card-validation";
+import crypto from "crypto";
 
+/**
+ * Generates a cryptographically secure random account number
+ * SEC-302 fix: Uses crypto.randomBytes instead of Math.random() for security
+ */
 function generateAccountNumber(): string {
-  return Math.floor(Math.random() * 1000000000)
-    .toString()
-    .padStart(10, "0");
+  // Generate 4 random bytes (32 bits) and convert to number
+  // This gives us a range of 0 to 4,294,967,295
+  const randomBytes = crypto.randomBytes(4);
+  const randomNumber = randomBytes.readUInt32BE(0);
+  // Modulo to get range 0-999,999,999 (9 digits max)
+  const accountNum = randomNumber % 1000000000;
+  return accountNum.toString().padStart(10, "0");
 }
 
 export const accountRouter = router({
@@ -76,11 +85,38 @@ export const accountRouter = router({
       z.object({
         accountId: z.number(),
         amount: z.number().positive(),
-        fundingSource: z.object({
-          type: z.enum(["card", "bank"]),
-          accountNumber: z.string(),
-          routingNumber: z.string().optional(),
-        }),
+        fundingSource: z
+          .object({
+            type: z.enum(["card", "bank"]),
+            accountNumber: z.string(),
+            routingNumber: z.string().optional(),
+          })
+          .refine(
+            (data) => {
+              // VAL-207 fix: Routing number is required for bank transfers
+              if (data.type === "bank") {
+                return !!data.routingNumber && data.routingNumber.trim().length > 0;
+              }
+              return true;
+            },
+            {
+              message: "Routing number is required for bank transfers",
+              path: ["routingNumber"],
+            }
+          )
+          .refine(
+            (data) => {
+              // VAL-207 fix: Validate routing number format (9 digits) for bank transfers
+              if (data.type === "bank" && data.routingNumber) {
+                return /^\d{9}$/.test(data.routingNumber);
+              }
+              return true;
+            },
+            {
+              message: "Routing number must be exactly 9 digits",
+              path: ["routingNumber"],
+            }
+          ),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -114,6 +150,22 @@ export const accountRouter = router({
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: cardValidation.errors.join(". "),
+          });
+        }
+      }
+
+      // VAL-207: Validate routing number for bank transfers (additional server-side check)
+      if (input.fundingSource.type === "bank") {
+        if (!input.fundingSource.routingNumber || input.fundingSource.routingNumber.trim().length === 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Routing number is required for bank transfers",
+          });
+        }
+        if (!/^\d{9}$/.test(input.fundingSource.routingNumber)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Routing number must be exactly 9 digits",
           });
         }
       }
