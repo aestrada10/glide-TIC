@@ -13,12 +13,15 @@ This report documents the root causes, fixes, and prevention strategies for all 
 | -------- | ------- | -------- | ------ |
 | Security | SEC-301 | Critical | Fixed  |
 | Security | SEC-303 | Critical | Fixed  |
+| Security | SEC-304 | High    | Fixed  |
 | Validation | VAL-208 | Critical | Fixed  |
 | Validation | VAL-202 | Critical | Fixed  |
 | Performance | PERF-408 | Critical | Fixed  |
 | Performance | PERF-406 | Critical | Fixed  |
 | Performance | PERF-405 | Critical | Fixed  |
 | Performance | PERF-404 | Medium  | Fixed  |
+| Performance | PERF-403 | High    | Fixed  |
+| Performance | PERF-402 | Medium  | Fixed  |
 | Performance | PERF-401 | Critical | Fixed  |
 
 Critical issues were prioritized first due to security/compliance risks and potential financial inaccuracies.
@@ -1493,3 +1496,231 @@ To verify the fix:
 4. Test error handling - should show clear error message
 5. Run test suite - all account creation tests should pass
 6. Verify no fake account objects are ever returned
+
+---
+
+# Bug Report: SEC-304, PERF-402, PERF-403 - Session Management Issues
+
+## Ticket Information
+
+- **Ticket IDs:** SEC-304, PERF-402, PERF-403
+- **Reporters:** DevOps Team, QA Team, Security Team
+- **Priorities:** High, Medium, High
+- **Status:** Fixed
+
+## Summary
+
+Three related session management issues were identified and fixed together:
+
+1. **SEC-304:** Multiple valid sessions per user with no invalidation - users could have unlimited concurrent sessions
+2. **PERF-402:** Logout always reported success even when session deletion failed - users thought they were logged out when they weren't
+3. **PERF-403:** Expiring sessions still considered valid until exact expiry time - security risk near session expiration
+
+All three issues were fixed in a coordinated update to session management code.
+
+---
+
+## How the Bugs Were Found
+
+### Investigation Process
+
+1. **SEC-304: Multiple Sessions Investigation**
+   - DevOps team reported users having multiple active sessions
+   - Examined `server/routers/auth.ts` line 191
+   - Found: New session created on login without invalidating old sessions
+   - Users could log in from multiple devices/browsers, each creating a new session
+   - No limit on concurrent sessions per user
+
+2. **PERF-402: Logout Issues Investigation**
+   - QA team reported logout always returns success
+   - Examined `server/routers/auth.ts` line 208-232
+   - Found: Logout always returned `{ success: true }` regardless of actual deletion
+   - No verification that session was actually deleted from database
+   - Users could think they were logged out when session was still active
+
+3. **PERF-403: Session Expiry Investigation**
+   - Security team reported sessions valid until exact expiry time
+   - Examined `server/trpc.ts` line 57
+   - Found: `new Date(session.expiresAt) > new Date()` - session valid until exact second
+   - Sessions expiring in 1 second were still considered valid
+   - Security risk: users could continue accessing system until exact expiry moment
+
+4. **Code Review Findings**
+   - Login creates new session without invalidating old ones (SEC-304)
+   - Logout doesn't verify deletion success (PERF-402)
+   - Session validation has no buffer before expiry (PERF-403)
+   - All three issues related to session lifecycle management
+
+5. **Verification**
+   - Tested multiple logins - confirmed multiple sessions created
+   - Tested logout - confirmed always returned success
+   - Tested session expiry - confirmed valid until exact time
+   - All issues confirmed and reproducible
+
+---
+
+## Root Cause
+
+1. **SEC-304: No Session Invalidation on Login**
+   - Login mutation creates new session without deleting old ones
+   - Each login creates a new session, allowing unlimited concurrent sessions
+   - No check to limit or invalidate existing sessions
+   - Security risk: compromised sessions remain valid even after new login
+
+2. **PERF-402: No Verification of Logout Success**
+   - Logout mutation deletes session but doesn't verify deletion
+   - Always returns success regardless of actual outcome
+   - If deletion fails (e.g., session doesn't exist), still reports success
+   - Users can't tell if logout actually worked
+
+3. **PERF-403: No Buffer for Session Expiry**
+   - Session validation checks: `new Date(session.expiresAt) > new Date()`
+   - Session valid until exact expiry time (down to the millisecond)
+   - No buffer period before expiry
+   - Security risk: sessions expiring in seconds are still valid
+
+---
+
+## Impact
+
+**SEC-304:**
+- **Security Risk:** Multiple active sessions allow unauthorized access
+- **Session Proliferation:** Users can have unlimited concurrent sessions
+- **Account Security:** Compromised sessions remain valid after new login
+- **Audit Issues:** Difficult to track which sessions are active
+
+**PERF-402:**
+- **User Confusion:** Users think they're logged out when they're not
+- **Security Risk:** Active sessions remain after "logout"
+- **Trust Issues:** Users lose trust when logout doesn't work
+- **Debugging Difficulties:** Hard to diagnose logout failures
+
+**PERF-403:**
+- **Security Risk:** Sessions near expiry still grant access
+- **Timing Attacks:** Potential for exploiting sessions at exact expiry
+- **Inconsistent Behavior:** Sessions valid until exact second, then immediately invalid
+- **User Experience:** Sudden logout at exact expiry time
+
+---
+
+## Solution
+
+### Implementation
+
+1. **Fixed SEC-304: Session Invalidation on Login (`server/routers/auth.ts`)**
+   - Added session invalidation before creating new session
+   - Deletes all existing sessions for user: `await db.delete(sessions).where(eq(sessions.userId, user.id))`
+   - Ensures only one active session per user at a time
+   - Prevents session proliferation
+
+2. **Fixed PERF-402: Logout Verification (`server/routers/auth.ts`)**
+   - Added verification that session exists before deletion
+   - Verifies deletion was successful by checking if session still exists
+   - Returns appropriate success/failure response based on actual outcome
+   - Users now know if logout actually worked
+
+3. **Fixed PERF-403: Session Expiry Buffer (`server/trpc.ts`)**
+   - Added 1-minute buffer before session expiry
+   - Sessions considered expired if within 1 minute of expiry time
+   - Automatically deletes expired sessions (within buffer)
+   - Prevents security issues near session expiration
+
+---
+
+### Technical Details
+
+**SEC-304 Fix:**
+- Before: New session created without invalidating old ones
+- After: All existing sessions deleted before creating new one
+- Ensures single active session per user
+- Prevents unauthorized access from old sessions
+
+**PERF-402 Fix:**
+- Before: Always returned `{ success: true }` regardless of outcome
+- After: Verifies session exists, deletes it, verifies deletion, returns appropriate response
+- Returns `{ success: false }` if session couldn't be deleted
+- Users can now tell if logout worked
+
+**PERF-403 Fix:**
+- Before: `new Date(session.expiresAt) > new Date()` - valid until exact time
+- After: `now < effectiveExpiry` where `effectiveExpiry = expiryTime - 1 minute`
+- Sessions expire 1 minute before actual expiry time
+- Automatically cleans up expired sessions
+
+**Before (Problematic Code):**
+```typescript
+// SEC-304: Login creates new session without invalidating old ones
+await db.insert(sessions).values({ userId: user.id, token, expiresAt });
+
+// PERF-402: Logout always returns success
+await db.delete(sessions).where(eq(sessions.token, token));
+return { success: true, message: "Logged out successfully" };
+
+// PERF-403: Session valid until exact expiry
+if (session && new Date(session.expiresAt) > new Date()) {
+  // Session valid even if expiring in 1 second
+}
+```
+
+**After (Fixed Code):**
+```typescript
+// SEC-304: Invalidate old sessions before creating new one
+await db.delete(sessions).where(eq(sessions.userId, user.id));
+await db.insert(sessions).values({ userId: user.id, token, expiresAt });
+
+// PERF-402: Verify logout actually worked
+const session = await db.select()...where(eq(sessions.token, token)).get();
+if (session) {
+  await db.delete(sessions).where(eq(sessions.token, token));
+  const deletedSession = await db.select()...where(eq(sessions.token, token)).get();
+  deleted = !deletedSession; // Verify deletion
+}
+return deleted ? { success: true } : { success: false };
+
+// PERF-403: Add buffer for session expiry
+const bufferMs = 60 * 1000; // 1 minute
+const effectiveExpiry = new Date(expiryTime.getTime() - bufferMs);
+if (now < effectiveExpiry) {
+  // Session valid
+} else {
+  // Session expired (within buffer), delete it
+  await db.delete(sessions).where(eq(sessions.token, token));
+}
+```
+
+---
+
+## Testing
+
+Test cases have been created in `tests/session-management.test.ts` to verify:
+- Only one active session per user after login
+- Old sessions are invalidated on new login
+- Logout verifies session deletion and returns correct response
+- Sessions expire with 1-minute buffer
+- Expired sessions are automatically cleaned up
+- Multiple login attempts result in single active session
+
+**Run tests:**
+
+```bash
+npx tsx tests/session-management.test.ts
+```
+
+---
+
+## Files Modified
+
+1. `server/routers/auth.ts` - Fixed: Added session invalidation on login, improved logout verification
+2. `server/trpc.ts` - Fixed: Added 1-minute buffer for session expiry validation
+
+---
+
+## Verification
+
+To verify the fixes:
+1. **SEC-304:** Login multiple times - should only have one active session
+2. **PERF-402:** Logout and verify response indicates actual success/failure
+3. **PERF-403:** Test session near expiry - should be invalidated 1 minute before expiry
+4. Run test suite - all session management tests should pass
+5. Verify old sessions are deleted on new login
+6. Verify logout returns correct success/failure status

@@ -21,19 +21,43 @@ if (command === "list-users") {
   const sessions = db
     .prepare(
       `
-    SELECT s.id, s.token, s.expires_at, u.email 
+    SELECT s.id, s.token, s.expires_at, u.email, u.id as user_id
     FROM sessions s 
     JOIN users u ON s.user_id = u.id
+    ORDER BY u.email, s.created_at DESC
   `
     )
     .all();
   if (sessions.length === 0) {
     console.log("No sessions found");
   } else {
+    // Group sessions by user to show if any user has multiple sessions
+    const sessionsByUser = {};
     sessions.forEach((session) => {
-      const isExpired = new Date(session.expires_at) < new Date();
-      console.log(`User: ${session.email}, Expires: ${session.expires_at} ${isExpired ? "(EXPIRED)" : "(ACTIVE)"}`);
-      console.log(`Token: ${session.token.substring(0, 20)}...`);
+      if (!sessionsByUser[session.email]) {
+        sessionsByUser[session.email] = [];
+      }
+      sessionsByUser[session.email].push(session);
+    });
+    
+    Object.keys(sessionsByUser).forEach((email) => {
+      const userSessions = sessionsByUser[email];
+      const activeCount = userSessions.filter(s => new Date(s.expires_at) >= new Date()).length;
+      console.log(`\nUser: ${email} (${userSessions.length} session(s), ${activeCount} active)`);
+      userSessions.forEach((session) => {
+        const isExpired = new Date(session.expires_at) < new Date();
+        const now = new Date();
+        const expiresAt = new Date(session.expires_at);
+        const bufferMs = 60 * 1000; // 1 minute buffer (PERF-403)
+        const effectiveExpiry = new Date(expiresAt.getTime() - bufferMs);
+        const isWithinBuffer = now >= effectiveExpiry && now < expiresAt;
+        const status = isExpired ? "(EXPIRED)" : isWithinBuffer ? "(EXPIRING SOON - within 1min buffer)" : "(ACTIVE)";
+        console.log(`  Expires: ${session.expires_at} ${status}`);
+        console.log(`  Token: ${session.token.substring(0, 20)}...`);
+      });
+      if (userSessions.length > 1) {
+        console.log(`  ⚠️  WARNING: User has ${userSessions.length} sessions! (SEC-304 fix should prevent this)`);
+      }
       console.log("---");
     });
   }

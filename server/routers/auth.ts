@@ -5,7 +5,7 @@ import { TRPCError } from "@trpc/server";
 import { publicProcedure, router } from "../trpc";
 import { db } from "@/lib/db";
 import { users, sessions } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { encryptSSN } from "@/lib/encryption";
 import { validatePasswordStrength } from "@/lib/password-validation";
 import { validateDateOfBirth } from "@/lib/date-validation";
@@ -181,6 +181,10 @@ export const authRouter = router({
         });
       }
 
+      // SEC-304 fix: Invalidate all existing sessions for this user before creating new one
+      // This ensures only one active session per user at a time
+      await db.delete(sessions).where(eq(sessions.userId, user.id));
+
       const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET || "temporary-secret-for-interview", {
         expiresIn: "7d",
       });
@@ -206,6 +210,8 @@ export const authRouter = router({
     }),
 
   logout: publicProcedure.mutation(async ({ ctx }) => {
+    let deleted = false;
+    
     if (ctx.user) {
       // Delete session from database
       let token: string | undefined;
@@ -218,17 +224,35 @@ export const authRouter = router({
           .find((c: string) => c.startsWith("session="))
           ?.split("=")[1];
       }
+      
       if (token) {
-        await db.delete(sessions).where(eq(sessions.token, token));
+        // Verify session exists before deletion (PERF-402 fix)
+        const session = await db.select().from(sessions).where(eq(sessions.token, token)).get();
+        if (session) {
+          await db.delete(sessions).where(eq(sessions.token, token));
+          // Verify deletion was successful
+          const deletedSession = await db.select().from(sessions).where(eq(sessions.token, token)).get();
+          deleted = !deletedSession; // True if session no longer exists
+        }
       }
     }
 
+    // Clear cookie regardless
     if ("setHeader" in ctx.res) {
       ctx.res.setHeader("Set-Cookie", `session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);
     } else {
       (ctx.res as Headers).set("Set-Cookie", `session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);
     }
 
-    return { success: true, message: ctx.user ? "Logged out successfully" : "No active session" };
+    // Return appropriate response based on actual deletion (PERF-402 fix)
+    if (!ctx.user) {
+      return { success: false, message: "No active session to logout" };
+    }
+    
+    if (deleted) {
+      return { success: true, message: "Logged out successfully" };
+    } else {
+      return { success: false, message: "Logout failed: session could not be deleted" };
+    }
   }),
 });

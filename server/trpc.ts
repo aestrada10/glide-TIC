@@ -54,16 +54,28 @@ export async function createContext(opts: CreateNextContextOptions | FetchCreate
 
       const session = await db.select().from(sessions).where(eq(sessions.token, token)).get();
 
-      if (session && new Date(session.expiresAt) > new Date()) {
-        const userData = await db.select().from(users).where(eq(users.id, decoded.userId)).get();
-        if (userData) {
-          // Exclude sensitive fields from user object
-          const { password, ssn, ...safeUser } = userData;
-          user = safeUser;
-        }
-        const expiresIn = new Date(session.expiresAt).getTime() - new Date().getTime();
-        if (expiresIn < 60000) {
-          console.warn("Session about to expire");
+      if (session) {
+        // PERF-403 fix: Add 1 minute buffer - consider session expired if within 1 minute of expiry
+        // This prevents security issues near session expiration
+        const now = new Date();
+        const expiryTime = new Date(session.expiresAt);
+        const bufferMs = 60 * 1000; // 1 minute buffer
+        const effectiveExpiry = new Date(expiryTime.getTime() - bufferMs);
+        
+        if (now < effectiveExpiry) {
+          const userData = await db.select().from(users).where(eq(users.id, decoded.userId)).get();
+          if (userData) {
+            // Exclude sensitive fields from user object
+            const { password, ssn, ...safeUser } = userData;
+            user = safeUser;
+          }
+          const expiresIn = expiryTime.getTime() - now.getTime();
+          if (expiresIn < 60000) {
+            console.warn("Session about to expire");
+          }
+        } else {
+          // Session is expired (within buffer), delete it
+          await db.delete(sessions).where(eq(sessions.token, token));
         }
       }
     } catch (error) {
