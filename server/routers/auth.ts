@@ -8,6 +8,7 @@ import { users, sessions } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { encryptSSN } from "@/lib/encryption";
 import { validatePasswordStrength } from "@/lib/password-validation";
+import { validateDateOfBirth } from "@/lib/date-validation";
 
 export const authRouter = router({
   signup: publicProcedure
@@ -80,7 +81,18 @@ export const authRouter = router({
         firstName: z.string().min(1),
         lastName: z.string().min(1),
         phoneNumber: z.string().regex(/^\+?\d{10,15}$/),
-        dateOfBirth: z.string(),
+        dateOfBirth: z
+          .string()
+          .refine(
+            (val) => {
+              const validation = validateDateOfBirth(val);
+              return validation.valid;
+            },
+            (val) => {
+              const validation = validateDateOfBirth(val);
+              return { message: validation.errors[0] || "Invalid date of birth" };
+            }
+          ),
         ssn: z.string().regex(/^\d{9}$/),
         address: z.string().min(1),
         city: z.string().min(1),

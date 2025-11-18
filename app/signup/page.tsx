@@ -228,8 +228,47 @@ export default function SignupPage() {
                   Date of Birth
                 </label>
                 <input
-                  {...register("dateOfBirth", { required: "Date of birth is required" })}
+                  {...register("dateOfBirth", {
+                    required: "Date of birth is required",
+                    validate: {
+                      notFuture: (value) => {
+                        const birthDate = new Date(value);
+                        const today = new Date();
+                        today.setHours(0, 0, 0, 0);
+                        birthDate.setHours(0, 0, 0, 0);
+                        if (birthDate > today) {
+                          return "Date of birth cannot be in the future";
+                        }
+                        return true;
+                      },
+                      minimumAge: (value) => {
+                        const birthDate = new Date(value);
+                        const today = new Date();
+                        let age = today.getFullYear() - birthDate.getFullYear();
+                        const monthDiff = today.getMonth() - birthDate.getMonth();
+                        const dayDiff = today.getDate() - birthDate.getDate();
+                        if (monthDiff < 0 || (monthDiff === 0 && dayDiff < 0)) {
+                          age--;
+                        }
+                        if (age < 18) {
+                          return "You must be at least 18 years old to create an account";
+                        }
+                        return true;
+                      },
+                      validDate: (value) => {
+                        const date = new Date(value);
+                        if (isNaN(date.getTime())) {
+                          return "Date of birth must be a valid date";
+                        }
+                        if (date.getFullYear() < 1900) {
+                          return "Date of birth appears to be invalid (too old)";
+                        }
+                        return true;
+                      },
+                    },
+                  })}
                   type="date"
+                  max={new Date().toISOString().split("T")[0]}
                   className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border"
                 />
                 {errors.dateOfBirth && <p className="mt-1 text-sm text-red-600">{errors.dateOfBirth.message}</p>}

@@ -14,6 +14,7 @@ This report documents the root causes, fixes, and prevention strategies for all 
 | Security | SEC-301 | Critical | Fixed  |
 | Security | SEC-303 | Critical | Fixed  |
 | Validation | VAL-208 | Critical | Fixed  |
+| Validation | VAL-202 | Critical | Fixed  |
 
 Critical issues were prioritized first due to security/compliance risks and potential financial inaccuracies.
 
@@ -444,3 +445,132 @@ To verify the fix:
 4. Try common password - should be rejected
 5. Try valid strong password (e.g., "SecureP@ss123") - should be accepted
 6. Run test suite - all password validation tests should pass
+
+---
+
+# Bug Report: VAL-202 - Date of Birth Validation
+
+## Ticket Information
+
+- **Ticket ID:** VAL-202
+- **Reporter:** Maria Garcia
+- **Priority:** Critical
+- **Status:** Fixed
+
+## Summary
+
+The system accepted future dates (e.g., 2025) as valid dates of birth, and did not verify that users meet the minimum age requirement (18 years old). This creates potential compliance issues with accepting minors and violates banking regulations that require account holders to be adults.
+
+---
+
+## How the Bug Was Found
+
+### Investigation Process
+
+1. **Backend Validation Review**
+   - Examined `server/routers/auth.ts` line 83
+   - Found: `dateOfBirth: z.string()` - only accepted any string, no validation
+   - No checks for future dates or minimum age
+
+2. **Frontend Validation Review**
+   - Examined `app/signup/page.tsx` date of birth input
+   - Found: Only `required: "Date of birth is required"` validation
+   - No checks for future dates or age requirements
+   - HTML5 date input type but no `max` attribute to prevent future dates
+
+3. **Security Analysis**
+   - Future dates like "2025-01-01" would be accepted
+   - Dates indicating users under 18 would be accepted
+   - No age verification for banking compliance
+   - Potential legal issues with minors creating accounts
+
+4. **Verification**
+   - Tested with future date: "2025-12-31" - was accepted
+   - Tested with date indicating age 17: "2007-01-01" (if current year is 2024) - was accepted
+   - Confirmed no validation logic existed
+
+---
+
+## Root Cause
+
+1. **No Date Validation:** Backend only checked if dateOfBirth was a string, not if it was valid
+2. **No Future Date Check:** System didn't verify date wasn't in the future
+3. **No Age Verification:** No minimum age requirement enforcement (18+ for banking)
+4. **Insufficient Frontend Validation:** Only required field check, no business logic validation
+5. **Missing HTML5 Constraints:** Date input didn't use `max` attribute to prevent future dates
+
+---
+
+## Impact
+
+- **Compliance Violations:** Banking regulations require account holders to be adults (18+)
+- **Legal Risk:** Allowing minors to create accounts violates financial services regulations
+- **Data Integrity:** Invalid dates (future dates) stored in database
+- **User Experience:** Users could accidentally enter wrong year without immediate feedback
+- **Audit Issues:** Compliance audits would flag missing age verification
+
+---
+
+## Solution
+
+### Implementation
+
+1. **Created Date Validation Utility (`lib/date-validation.ts`)**
+   - `validateDateOfBirth()` function with comprehensive checks
+   - Validates date is not in the future
+   - Calculates age and enforces minimum age (18 years)
+   - Validates date format and reasonable date range (not before 1900)
+   - Helper functions: `calculateAge()`, `isFutureDate()`, `isMinimumAge()`
+
+2. **Updated Backend Validation (`server/routers/auth.ts`)**
+   - Enhanced Zod schema with `.refine()` validation
+   - Uses `validateDateOfBirth()` utility
+   - Returns specific error messages for each validation failure
+   - Enforces: valid date, not future, minimum age 18, reasonable date range
+
+3. **Updated Frontend Validation (`app/signup/page.tsx`)**
+   - Added multiple validation rules:
+     - `notFuture`: Prevents future dates
+     - `minimumAge`: Ensures user is at least 18 years old
+     - `validDate`: Validates date format and reasonable range
+   - Added `max` attribute to date input to prevent future dates in UI
+   - Provides immediate feedback to users
+
+---
+
+## Testing
+
+Test cases have been created in `tests/date-validation.test.ts` to verify:
+- Future dates are rejected
+- Dates indicating age under 18 are rejected
+- Valid dates for users 18+ are accepted
+- Invalid date formats are rejected
+- Dates before 1900 are rejected
+- Age calculation is accurate
+- Edge cases (birthday today, birthday tomorrow, etc.)
+
+**Run tests:**
+
+```bash
+npx tsx tests/date-validation.test.ts
+```
+
+---
+
+## Files Modified
+
+1. `lib/date-validation.ts` - New file: Date validation utility
+2. `server/routers/auth.ts` - Updated: Enhanced date of birth validation schema
+3. `app/signup/page.tsx` - Updated: Added frontend validation and max attribute
+
+---
+
+## Verification
+
+To verify the fix:
+1. Try entering future date (e.g., "2025-12-31") - should be rejected
+2. Try entering date indicating age 17 - should be rejected
+3. Try entering date indicating age 18 - should be accepted
+4. Try entering date indicating age 25 - should be accepted
+5. Try entering invalid date format - should be rejected
+6. Run test suite - all date validation tests should pass
