@@ -4,7 +4,6 @@ import { protectedProcedure, router } from "../trpc";
 import { db, getRawDatabase } from "@/lib/db";
 import { accounts, transactions } from "@/lib/db/schema";
 import { eq, and, desc } from "drizzle-orm";
-import { sql } from "drizzle-orm";
 
 function generateAccountNumber(): string {
   return Math.floor(Math.random() * 1000000000)
@@ -183,20 +182,20 @@ export const accountRouter = router({
         });
       }
 
+      // Fetch all transactions for the account, ordered by creation date (most recent first)
+      // This ensures all transactions are returned in a predictable order
       const accountTransactions = await db
         .select()
         .from(transactions)
-        .where(eq(transactions.accountId, input.accountId));
+        .where(eq(transactions.accountId, input.accountId))
+        .orderBy(desc(transactions.createdAt));
 
-      const enrichedTransactions = [];
-      for (const transaction of accountTransactions) {
-        const accountDetails = await db.select().from(accounts).where(eq(accounts.id, transaction.accountId)).get();
-
-        enrichedTransactions.push({
-          ...transaction,
-          accountType: accountDetails?.accountType,
-        });
-      }
+      // Enrich transactions with account type
+      // We already have the account from the verification above, so we can reuse it
+      const enrichedTransactions = accountTransactions.map((transaction) => ({
+        ...transaction,
+        accountType: account.accountType,
+      }));
 
       return enrichedTransactions;
     }),

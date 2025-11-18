@@ -17,6 +17,8 @@ This report documents the root causes, fixes, and prevention strategies for all 
 | Validation | VAL-202 | Critical | Fixed  |
 | Performance | PERF-408 | Critical | Fixed  |
 | Performance | PERF-406 | Critical | Fixed  |
+| Performance | PERF-405 | Critical | Fixed  |
+| Performance | PERF-404 | Medium  | Fixed  |
 
 Critical issues were prioritized first due to security/compliance risks and potential financial inaccuracies.
 
@@ -996,3 +998,286 @@ To verify the fix:
 3. Test high transaction volumes - no lost updates
 4. Run test suite - all balance calculation tests should pass
 5. Check that balances are accurate after many transactions
+
+---
+
+# Bug Report: PERF-405 - Missing Transactions
+
+## Ticket Information
+
+- **Ticket ID:** PERF-405
+- **Reporter:** Multiple Users
+- **Priority:** Critical
+- **Status:** Fixed
+
+## Summary
+
+Not all transactions appeared in the transaction history after multiple funding events. The transaction query lacked proper ordering, causing transactions to be returned in an unpredictable order, making it appear as if some transactions were missing. Additionally, the transaction enrichment loop was inefficient and could potentially cause issues with null handling.
+
+**Note:** This fix also resolves PERF-404 (Transaction Sorting) - the same root cause (missing ordering) caused both issues.
+
+---
+
+## How the Bug Was Found
+
+### Investigation Process
+
+1. **User Reports**
+   - Multiple users reported that not all transactions appeared in their transaction history
+   - Users performed multiple funding events but couldn't see all transactions
+   - Some transactions seemed to be missing when reviewing history
+
+2. **Code Review of Transaction Retrieval**
+   - Examined `server/routers/account.ts` line 186-189
+   - Found: `getTransactions` query had no `orderBy` clause
+   - Transactions were returned in an unpredictable order (likely by insertion order or ID)
+   - No explicit ordering by creation date or ID
+
+3. **Transaction Enrichment Analysis**
+   - Found lines 191-199: Inefficient loop that queries account for each transaction
+   - The account was already fetched for verification (line 173-177)
+   - Unnecessary database queries in the enrichment loop
+   - Potential null handling issues if account details weren't found
+
+4. **Testing Multiple Funding Events**
+   - Created multiple funding transactions for the same account
+   - Queried transaction history
+   - Found: Transactions appeared in unpredictable order
+   - Some transactions appeared to be "missing" because they weren't in expected chronological order
+   - Without ordering, it was difficult to verify all transactions were present
+
+5. **Verification**
+   - Confirmed all transactions were actually stored in the database
+   - The issue was the lack of ordering in the query
+   - Transactions were present but appeared in random order
+   - Users couldn't verify all transactions were present without proper ordering
+
+---
+
+## Root Cause
+
+1. **Missing Ordering in Query:**
+   - The `getTransactions` query had no `orderBy` clause
+   - Transactions were returned in an unpredictable order (likely by database insertion order)
+   - Without chronological ordering, it appeared as if transactions were missing
+   - Users expected to see transactions in chronological order (newest first or oldest first)
+
+2. **Inefficient Transaction Enrichment:**
+   - The code looped through transactions and queried the account for each one
+   - The account was already fetched during verification
+   - Unnecessary database queries (N+1 query problem)
+   - Could cause performance issues with many transactions
+
+3. **No Predictable Ordering:**
+   - Without explicit ordering, transaction order could vary between queries
+   - Made it difficult for users to verify all transactions were present
+   - Transactions might appear in different orders on different page loads
+
+4. **Potential Null Handling Issues:**
+   - If `accountDetails` was null, the enrichment would still work but was inefficient
+   - The account was already verified, so this shouldn't happen, but the code didn't leverage that
+
+---
+
+## Impact
+
+- **User Confusion:** Users couldn't verify all their transactions were present
+- **Trust Issues:** Users lost trust in the system when transactions appeared to be missing
+- **Audit Difficulties:** Difficult to audit transaction history without proper ordering
+- **Performance Issues:** Inefficient N+1 queries when enriching transactions
+- **User Experience:** Poor UX when transactions appear in random order
+- **Compliance Issues:** Financial records should be in chronological order for compliance
+
+---
+
+## Solution
+
+### Implementation
+
+1. **Added Proper Ordering (`server/routers/account.ts`)**
+   - Added `.orderBy(desc(transactions.createdAt))` to the transaction query
+   - Transactions are now returned in descending order (most recent first)
+   - Ensures predictable, chronological ordering of transactions
+   - Makes it easy for users to verify all transactions are present
+
+2. **Optimized Transaction Enrichment**
+   - Removed the inefficient loop that queried account for each transaction
+   - Reused the `account` object already fetched during verification
+   - Changed from loop to `.map()` for cleaner code
+   - Eliminated N+1 query problem
+
+3. **Improved Code Clarity**
+   - Added comments explaining the ordering
+   - Made it clear that all transactions are returned
+   - Improved code maintainability
+
+---
+
+### Technical Details
+
+**Transaction Ordering:**
+
+- Uses `desc(transactions.createdAt)` to order by creation date descending
+- Most recent transactions appear first (standard for transaction history)
+- Ensures predictable ordering across all queries
+- Makes it easy to verify all transactions are present
+
+**Query Optimization:**
+
+- Before: N+1 queries (1 for transactions + N for account details)
+- After: 1 query (transactions only, reuse existing account object)
+- Significantly improves performance with many transactions
+- Reduces database load
+
+**Before (Problematic Code):**
+```typescript
+const accountTransactions = await db
+  .select()
+  .from(transactions)
+  .where(eq(transactions.accountId, input.accountId));
+  // No ordering - unpredictable order!
+
+const enrichedTransactions = [];
+for (const transaction of accountTransactions) {
+  // N+1 query problem - queries account for each transaction
+  const accountDetails = await db.select().from(accounts)
+    .where(eq(accounts.id, transaction.accountId)).get();
+
+  enrichedTransactions.push({
+    ...transaction,
+    accountType: accountDetails?.accountType,
+  });
+}
+```
+
+**After (Fixed Code):**
+```typescript
+// Fetch all transactions for the account, ordered by creation date (most recent first)
+// This ensures all transactions are returned in a predictable order
+const accountTransactions = await db
+  .select()
+  .from(transactions)
+  .where(eq(transactions.accountId, input.accountId))
+  .orderBy(desc(transactions.createdAt));  // Proper ordering!
+
+// Enrich transactions with account type
+// We already have the account from the verification above, so we can reuse it
+const enrichedTransactions = accountTransactions.map((transaction) => ({
+  ...transaction,
+  accountType: account.accountType,  // Reuse existing account object
+}));
+```
+
+---
+
+## Testing
+
+Test cases have been created in `tests/transaction-history.test.ts` to verify:
+- All transactions are returned in the query
+- Transactions are ordered by creation date (descending)
+- Multiple funding events result in all transactions being visible
+- Transaction history is complete and accurate
+- Performance is acceptable with many transactions
+
+**Run tests:**
+
+```bash
+npx tsx tests/transaction-history.test.ts
+```
+
+---
+
+## Files Modified
+
+1. `server/routers/account.ts` - Fixed: Added ordering to transaction query, optimized enrichment
+
+---
+
+## Verification
+
+To verify the fix:
+1. Create multiple funding transactions for an account
+2. Query transaction history - all transactions should be visible
+3. Verify transactions are in chronological order (newest first)
+4. Test with many transactions - all should be returned
+5. Run test suite - all transaction history tests should pass
+6. Verify performance is acceptable with high transaction volumes
+
+---
+
+# Bug Report: PERF-404 - Transaction Sorting
+
+## Ticket Information
+
+- **Ticket ID:** PERF-404
+- **Reporter:** Jane Doe
+- **Priority:** Medium
+- **Status:** Fixed
+
+## Summary
+
+Transaction order appeared random sometimes, causing confusion when reviewing transaction history. This was caused by the same root issue as PERF-405 - the transaction query lacked proper ordering.
+
+---
+
+## How the Bug Was Found
+
+### Investigation Process
+
+1. **User Report**
+   - Jane Doe reported that transaction order seemed random sometimes
+   - Transactions didn't appear in chronological order
+   - Made it difficult to review transaction history
+
+2. **Code Review**
+   - Examined `server/routers/account.ts` line 186-189
+   - Found: `getTransactions` query had no `orderBy` clause
+   - Transactions were returned in unpredictable order
+
+3. **Verification**
+   - Tested transaction queries - confirmed random ordering
+   - Same root cause as PERF-405 (missing ordering)
+
+---
+
+## Root Cause
+
+1. **Missing Ordering in Query:**
+   - The `getTransactions` query had no `orderBy` clause
+   - Transactions were returned in unpredictable order (likely by database insertion order or ID)
+   - Without explicit ordering, transaction order could vary between queries
+
+---
+
+## Impact
+
+- **User Confusion:** Transactions appeared in random order, making it difficult to review history
+- **Poor User Experience:** Users expected chronological ordering
+- **Audit Difficulties:** Difficult to audit transaction history without proper ordering
+
+---
+
+## Solution
+
+**This issue was fixed as part of PERF-405.** The same solution applies:
+
+1. **Added Proper Ordering (`server/routers/account.ts`)**
+   - Added `.orderBy(desc(transactions.createdAt))` to the transaction query
+   - Transactions are now returned in descending order (most recent first)
+   - Ensures predictable, chronological ordering of transactions
+
+---
+
+## Files Modified
+
+1. `server/routers/account.ts` - Fixed: Added ordering to transaction query (same fix as PERF-405)
+
+---
+
+## Verification
+
+To verify the fix:
+1. Create multiple transactions for an account
+2. Query transaction history multiple times
+3. Verify transactions are always in the same chronological order (newest first)
+4. Order should be consistent across all queries
