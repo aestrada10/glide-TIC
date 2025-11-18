@@ -4,17 +4,27 @@ import * as schema from "./schema";
 
 const dbPath = "bank.db";
 
-const sqlite = new Database(dbPath);
-export const db = drizzle(sqlite, { schema });
+// Singleton database connection to prevent resource leaks
+let sqlite: Database.Database | null = null;
 
-const connections: Database.Database[] = [];
+function getDatabase(): Database.Database {
+  if (!sqlite) {
+    sqlite = new Database(dbPath);
+    // Enable WAL mode for better concurrency
+    sqlite.pragma("journal_mode = WAL");
+  }
+  return sqlite;
+}
+
+const db = drizzle(getDatabase(), { schema });
+
+export { db };
 
 export function initDb() {
-  const conn = new Database(dbPath);
-  connections.push(conn);
+  const database = getDatabase();
 
   // Create tables if they don't exist
-  sqlite.exec(`
+  database.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       email TEXT UNIQUE NOT NULL,
@@ -23,7 +33,6 @@ export function initDb() {
       last_name TEXT NOT NULL,
       phone_number TEXT NOT NULL,
       date_of_birth TEXT NOT NULL,
-      -- SSN is stored encrypted using AES-256-GCM (see lib/encryption.ts)
       ssn TEXT NOT NULL,
       address TEXT NOT NULL,
       city TEXT NOT NULL,
@@ -63,5 +72,33 @@ export function initDb() {
   `);
 }
 
+/**
+ * Closes the database connection
+ * Should be called during application shutdown or cleanup
+ */
+export function closeDb() {
+  if (sqlite) {
+    sqlite.close();
+    sqlite = null;
+  }
+}
+
 // Initialize database on import
 initDb();
+
+// Close database connection on process exit
+if (typeof process !== "undefined") {
+  process.on("SIGINT", () => {
+    closeDb();
+    process.exit(0);
+  });
+
+  process.on("SIGTERM", () => {
+    closeDb();
+    process.exit(0);
+  });
+
+  process.on("exit", () => {
+    closeDb();
+  });
+}

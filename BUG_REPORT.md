@@ -15,6 +15,7 @@ This report documents the root causes, fixes, and prevention strategies for all 
 | Security | SEC-303 | Critical | Fixed  |
 | Validation | VAL-208 | Critical | Fixed  |
 | Validation | VAL-202 | Critical | Fixed  |
+| Performance | PERF-408 | Critical | Fixed  |
 
 Critical issues were prioritized first due to security/compliance risks and potential financial inaccuracies.
 
@@ -574,3 +575,197 @@ To verify the fix:
 4. Try entering date indicating age 25 - should be accepted
 5. Try entering invalid date format - should be rejected
 6. Run test suite - all date validation tests should pass
+
+---
+
+# Bug Report: PERF-408 - Resource Leak
+
+## Ticket Information
+
+- **Ticket ID:** PERF-408
+- **Reporter:** System Monitoring
+- **Priority:** Critical
+- **Status:** Fixed
+
+## Summary
+
+Database connections were being created but never closed, leading to resource leaks. Multiple connections were created unnecessarily, and no cleanup mechanism existed to close connections on application shutdown. This could lead to system resource exhaustion over time.
+
+---
+
+## How the Bug Was Found
+
+### Investigation Process
+
+1. **Database Connection Code Review**
+   - Examined `lib/db/index.ts` to understand connection management
+   - Found line 7: `const sqlite = new Database(dbPath);` - creates a connection at module level
+   - Found line 13: `const conn = new Database(dbPath);` - creates ANOTHER connection in `initDb()`
+   - Found line 10: `const connections: Database.Database[] = [];` - array to track connections
+   - Found line 14: `connections.push(conn);` - connection added to array but never closed
+
+2. **Resource Leak Analysis**
+   - Identified that `initDb()` creates a new connection every time it's called
+   - The connection created in `initDb()` is stored in an array but never closed
+   - Multiple connections to the same database file were being created
+   - No cleanup mechanism for closing connections on shutdown
+
+3. **System Monitoring Findings**
+   - System monitoring detected increasing database connection count
+   - Resource exhaustion warnings in production logs
+   - Database file locks accumulating over time
+   - Memory usage increasing with application uptime
+
+4. **Verification**
+   - Checked for `close()` calls on database connections - none found
+   - Verified `initDb()` is called on module import, creating an extra connection
+   - Confirmed the `connections` array is populated but never used for cleanup
+
+---
+
+## Root Cause
+
+1. **Multiple Connection Creation:** Two separate database connections were created:
+   - One at module level (`const sqlite = new Database(dbPath)`)
+   - Another in `initDb()` function (`const conn = new Database(dbPath)`)
+
+2. **No Connection Cleanup:** No mechanism to close database connections:
+   - No `close()` calls anywhere in the codebase
+   - No process exit handlers to clean up resources
+   - Connections remained open for the entire application lifetime
+
+3. **Unused Connection Tracking:** The `connections` array was populated but never used:
+   - Connections were added to the array
+   - But the array was never iterated to close connections
+   - No cleanup function existed
+
+4. **No Singleton Pattern:** Each call to `initDb()` could potentially create new connections
+   - No check to see if a connection already exists
+   - Multiple imports could create multiple connections
+
+5. **Missing Process Exit Handlers:** No cleanup on application shutdown:
+   - No SIGINT/SIGTERM handlers
+   - No process.exit handlers
+   - Connections remained open even after application termination
+
+---
+
+## Impact
+
+- **Resource Exhaustion:** Database connections accumulate over time
+- **File Lock Issues:** Multiple connections to SQLite can cause locking problems
+- **Memory Leaks:** Each connection consumes memory that's never released
+- **Performance Degradation:** Too many connections can slow down database operations
+- **System Instability:** Resource exhaustion can cause application crashes
+- **Production Issues:** Long-running applications would eventually run out of resources
+
+---
+
+## Solution
+
+### Implementation
+
+1. **Implemented Singleton Pattern (`lib/db/index.ts`)**
+   - Changed from direct connection creation to a `getDatabase()` function
+   - Ensures only one database connection exists
+   - Connection is created lazily on first access
+   - Reuses the same connection for all operations
+
+2. **Removed Duplicate Connection Creation**
+   - Removed the connection creation in `initDb()`
+   - `initDb()` now uses the singleton connection via `getDatabase()`
+   - Eliminated the unused `connections` array
+
+3. **Added Connection Cleanup**
+   - Created `closeDb()` function to properly close the connection
+   - Added process exit handlers (SIGINT, SIGTERM, exit)
+   - Ensures connections are closed on application shutdown
+
+4. **Enabled WAL Mode**
+   - Added `sqlite.pragma("journal_mode = WAL")` for better concurrency
+   - Improves performance and reduces locking issues
+
+---
+
+### Technical Details
+
+**Singleton Pattern Implementation:**
+
+- `getDatabase()` function checks if connection exists before creating
+- Returns existing connection if already created
+- Creates connection only once on first call
+- Prevents multiple connections to the same database file
+
+**Connection Cleanup:**
+
+- `closeDb()` function safely closes the connection
+- Sets connection to `null` after closing
+- Process exit handlers ensure cleanup on shutdown
+- Handles SIGINT (Ctrl+C), SIGTERM (termination signal), and normal exit
+
+**Before (Problematic Code):**
+```typescript
+const sqlite = new Database(dbPath);  // Connection 1
+const connections: Database.Database[] = [];
+
+export function initDb() {
+  const conn = new Database(dbPath);  // Connection 2 (leak!)
+  connections.push(conn);  // Never closed
+  sqlite.exec(`...`);
+}
+```
+
+**After (Fixed Code):**
+```typescript
+let sqlite: Database.Database | null = null;
+
+function getDatabase(): Database.Database {
+  if (!sqlite) {
+    sqlite = new Database(dbPath);
+    sqlite.pragma("journal_mode = WAL");
+  }
+  return sqlite;  // Reuse same connection
+}
+
+export function closeDb() {
+  if (sqlite) {
+    sqlite.close();  // Proper cleanup
+    sqlite = null;
+  }
+}
+```
+
+---
+
+## Testing
+
+Test cases have been created in `tests/db-connection.test.ts` to verify:
+- Only one database connection is created
+- Multiple calls to `getDatabase()` return the same connection
+- Connection can be properly closed
+- Connection is recreated after closing
+- Process exit handlers work correctly
+- No connection leaks occur
+
+**Run tests:**
+
+```bash
+npx tsx tests/db-connection.test.ts
+```
+
+---
+
+## Files Modified
+
+1. `lib/db/index.ts` - Fixed: Implemented singleton pattern, removed duplicate connections, added cleanup
+
+---
+
+## Verification
+
+To verify the fix:
+1. Check that only one connection is created (use connection count monitoring)
+2. Verify connections are closed on application shutdown
+3. Monitor system resources - should not accumulate over time
+4. Run test suite - all connection management tests should pass
+5. Check application logs for connection cleanup messages
