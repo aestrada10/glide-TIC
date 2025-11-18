@@ -13,6 +13,7 @@ This report documents the root causes, fixes, and prevention strategies for all 
 | -------- | ------- | -------- | ------ |
 | Security | SEC-301 | Critical | Fixed  |
 | Security | SEC-303 | Critical | Fixed  |
+| Validation | VAL-208 | Critical | Fixed  |
 
 Critical issues were prioritized first due to security/compliance risks and potential financial inaccuracies.
 
@@ -311,3 +312,135 @@ To verify the fix:
 2. Malicious scripts do not execute
 3. Special characters are properly escaped
 4. All XSS test cases pass
+
+---
+
+# Bug Report: VAL-208 - Weak Password Requirements
+
+## Ticket Information
+
+- **Ticket ID:** VAL-208
+- **Reporter:** Security Team
+- **Priority:** Critical
+- **Status:** Fixed
+
+## Summary
+
+Password validation only checked minimum length (8 characters) without enforcing complexity requirements. This allowed users to create weak passwords that are easily guessable or vulnerable to brute-force attacks, creating significant account security risks.
+
+---
+
+## How the Bug Was Found
+
+### Investigation Process
+
+1. **Backend Validation Review**
+   - Examined `server/routers/auth.ts` line 16
+   - Found: `password: z.string().min(8)` - only validated length
+   - No checks for uppercase, lowercase, numbers, or special characters
+
+2. **Frontend Validation Review**
+   - Examined `app/signup/page.tsx` password validation
+   - Found partial validation (checked for numbers and common passwords)
+   - However, backend validation was the source of truth and was weak
+
+3. **Security Analysis**
+   - Weak passwords like "password", "12345678", "aaaaaaaa" would be accepted
+   - No enforcement of password complexity standards (NIST, OWASP recommendations)
+   - Passwords without mixed case, numbers, or special characters are vulnerable to dictionary attacks
+
+4. **Verification**
+   - Tested with weak passwords: "password", "12345678", "abcdefgh"
+   - Confirmed these would pass backend validation
+   - Identified gap between frontend hints and backend enforcement
+
+---
+
+## Root Cause
+
+1. **Insufficient Backend Validation:** Only length check (`min(8)`) without complexity requirements
+2. **Missing Security Standards:** No enforcement of industry best practices (uppercase, lowercase, numbers, special characters)
+3. **Inconsistent Validation:** Frontend had some checks but backend didn't enforce them
+4. **No Common Password Blocking:** Backend didn't check against common/weak passwords
+5. **No Pattern Detection:** Didn't prevent repeated characters or sequential patterns
+
+---
+
+## Impact
+
+- **Account Security Risk:** Weak passwords are easily guessable or crackable
+- **Brute-Force Vulnerability:** Simple passwords can be cracked in seconds
+- **Dictionary Attack Risk:** Common passwords are vulnerable to dictionary attacks
+- **Compliance Issues:** Fails to meet security standards (NIST, PCI-DSS, OWASP)
+- **User Data Exposure:** Compromised accounts can lead to data breaches
+- **Financial Risk:** Banking application requires strong authentication
+
+---
+
+## Solution
+
+### Implementation
+
+1. **Created Password Validation Utility (`lib/password-validation.ts`)**
+   - Comprehensive password strength validation function
+   - Checks for: length, uppercase, lowercase, numbers, special characters
+   - Blocks common passwords
+   - Prevents repeated characters and sequential patterns
+
+2. **Updated Backend Validation (`server/routers/auth.ts`)**
+   - Enhanced Zod schema with multiple `.refine()` validations
+   - Enforces:
+     - Minimum 8 characters
+     - At least one uppercase letter
+     - At least one lowercase letter
+     - At least one number
+     - At least one special character
+     - Not a common password
+     - No excessive repeated characters
+     - No sequential character patterns
+
+3. **Updated Frontend Validation (`app/signup/page.tsx`)**
+   - Synchronized frontend validation with backend requirements
+   - Provides immediate feedback to users
+   - All validation rules match backend enforcement
+
+---
+
+## Testing
+
+Test cases have been created in `tests/password-validation.test.ts` to verify:
+- Valid passwords with all requirements pass
+- Missing uppercase letter is rejected
+- Missing lowercase letter is rejected
+- Missing number is rejected
+- Missing special character is rejected
+- Common passwords are rejected
+- Passwords with repeated characters are rejected
+- Passwords with sequential patterns are rejected
+- Edge cases and boundary conditions
+
+**Run tests:**
+
+```bash
+npx tsx tests/password-validation.test.ts
+```
+
+---
+
+## Files Modified
+
+1. `lib/password-validation.ts` - New file: Password validation utility
+2. `server/routers/auth.ts` - Updated: Enhanced password validation schema
+3. `app/signup/page.tsx` - Updated: Synchronized frontend validation
+
+---
+
+## Verification
+
+To verify the fix:
+1. Try creating account with weak password (e.g., "password") - should be rejected
+2. Try password without uppercase - should be rejected
+3. Try password without special character - should be rejected
+4. Try common password - should be rejected
+5. Try valid strong password (e.g., "SecureP@ss123") - should be accepted
+6. Run test suite - all password validation tests should pass

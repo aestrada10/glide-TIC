@@ -7,13 +7,76 @@ import { db } from "@/lib/db";
 import { users, sessions } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { encryptSSN } from "@/lib/encryption";
+import { validatePasswordStrength } from "@/lib/password-validation";
 
 export const authRouter = router({
   signup: publicProcedure
     .input(
       z.object({
         email: z.string().email().toLowerCase(),
-        password: z.string().min(8),
+        password: z
+          .string()
+          .min(8, "Password must be at least 8 characters long")
+          .refine(
+            (val) => /[A-Z]/.test(val),
+            "Password must contain at least one uppercase letter"
+          )
+          .refine(
+            (val) => /[a-z]/.test(val),
+            "Password must contain at least one lowercase letter"
+          )
+          .refine(
+            (val) => /\d/.test(val),
+            "Password must contain at least one number"
+          )
+          .refine(
+            (val) => /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(val),
+            "Password must contain at least one special character (!@#$%^&*()_+-=[]{}|;:,.<>?)"
+          )
+          .refine(
+            (val) => {
+              const commonPasswords = [
+                "password",
+                "password123",
+                "12345678",
+                "123456789",
+                "qwerty",
+                "abc123",
+                "monkey",
+                "1234567",
+                "letmein",
+                "trustno1",
+                "dragon",
+                "baseball",
+                "iloveyou",
+                "master",
+                "sunshine",
+                "ashley",
+                "bailey",
+                "passw0rd",
+                "shadow",
+                "123123",
+                "654321",
+                "superman",
+                "qazwsx",
+                "michael",
+                "football",
+              ];
+              return !commonPasswords.includes(val.toLowerCase());
+            },
+            "Password is too common. Please choose a more unique password"
+          )
+          .refine(
+            (val) => !/(.)\1{3,}/.test(val),
+            "Password contains too many repeated characters"
+          )
+          .refine(
+            (val) =>
+              !/01234|12345|23456|34567|45678|56789|abcdef|bcdefg|cdefgh|defghi|efghij|fghijk|ghijkl|hijklm|ijklmn|jklmno|klmnop|lmnopq|mnopqr|nopqrs|opqrst|pqrstu|qrstuv|rstuvw|stuvwx|tuvwxy|uvwxyz/i.test(
+                val
+              ),
+            "Password contains sequential characters which are easy to guess"
+          ),
         firstName: z.string().min(1),
         lastName: z.string().min(1),
         phoneNumber: z.string().regex(/^\+?\d{10,15}$/),

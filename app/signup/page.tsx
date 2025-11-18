@@ -102,14 +102,53 @@ export default function SignupPage() {
                     required: "Password is required",
                     minLength: {
                       value: 8,
-                      message: "Password must be at least 8 characters",
+                      message: "Password must be at least 8 characters long",
                     },
                     validate: {
+                      hasUppercase: (value) =>
+                        /[A-Z]/.test(value) || "Password must contain at least one uppercase letter",
+                      hasLowercase: (value) =>
+                        /[a-z]/.test(value) || "Password must contain at least one lowercase letter",
+                      hasNumber: (value) => /\d/.test(value) || "Password must contain at least one number",
+                      hasSpecialChar: (value) =>
+                        /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(value) ||
+                        "Password must contain at least one special character (!@#$%^&*()_+-=[]{}|;:,.<>?)",
                       notCommon: (value) => {
-                        const commonPasswords = ["password", "12345678", "qwerty"];
-                        return !commonPasswords.includes(value.toLowerCase()) || "Password is too common";
+                        const commonPasswords = [
+                          "password",
+                          "password123",
+                          "12345678",
+                          "123456789",
+                          "qwerty",
+                          "abc123",
+                          "monkey",
+                          "1234567",
+                          "letmein",
+                          "trustno1",
+                          "dragon",
+                          "baseball",
+                          "iloveyou",
+                          "master",
+                          "sunshine",
+                          "ashley",
+                          "bailey",
+                          "passw0rd",
+                          "shadow",
+                          "123123",
+                          "654321",
+                          "superman",
+                          "qazwsx",
+                          "michael",
+                          "football",
+                        ];
+                        return !commonPasswords.includes(value.toLowerCase()) || "Password is too common. Please choose a more unique password";
                       },
-                      hasNumber: (value) => /\d/.test(value) || "Password must contain a number",
+                      noRepeatedChars: (value) =>
+                        !/(.)\1{3,}/.test(value) || "Password contains too many repeated characters",
+                      noSequential: (value) =>
+                        !/01234|12345|23456|34567|45678|56789|abcdef|bcdefg|cdefgh|defghi|efghij|fghijk|ghijkl|hijklm|ijklmn|jklmno|klmnop|lmnopq|mnopqr|nopqrs|opqrst|pqrstu|qrstuv|rstuvw|stuvwx|tuvwxy|uvwxyz/i.test(
+                          value
+                        ) || "Password contains sequential characters which are easy to guess",
                     },
                   })}
                   type="password"
