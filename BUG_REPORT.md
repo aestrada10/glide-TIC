@@ -12,6 +12,7 @@ This report documents the root causes, fixes, and prevention strategies for all 
 | Category | Ticket  | Priority | Status |
 | -------- | ------- | -------- | ------ |
 | Security | SEC-301 | Critical | Fixed  |
+| Security | SEC-303 | Critical | Fixed  |
 
 Critical issues were prioritized first due to security/compliance risks and potential financial inaccuracies.
 
@@ -128,17 +129,21 @@ The encryption key must be set as an environment variable. Currently, if not set
 **Where to Set the Encryption Key:**
 
 1. **Development (`.env` file):**
+
    - Create a `.env` file in the project root
    - Add: `ENCRYPTION_KEY=your-64-character-hex-key-here`
    - Next.js automatically loads `.env` files
 
 2. **Generate a Secure Key:**
+
    ```bash
    node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
    ```
+
    This generates a 64-character hex string (recommended format)
 
 3. **Key Format Options:**
+
    - **64-character hex string** (recommended): Used directly as the encryption key
    - **Any other string**: Will be derived using PBKDF2 key derivation
 
@@ -148,6 +153,7 @@ The encryption key must be set as an environment variable. Currently, if not set
    - Use different keys for development and production
 
 **⚠️ Important Security Notes:**
+
 - If the encryption key is lost, encrypted data **cannot be decrypted**
 - The current default key is **insecure** and should only be used for development/testing
 - Always use a strong, randomly generated key in production
@@ -177,5 +183,131 @@ The encryption key must be set as an environment variable. Currently, if not set
 
 ```bash
 npx tsx tests/encryption.test.ts
-npx npx tsx tests/auth-router.test.ts
+npx tsx tests/auth-router.test.ts
 ```
+
+---
+
+# Bug Report: SEC-303 - XSS Vulnerability
+
+## Ticket Information
+
+- **Ticket ID:** SEC-303
+- **Reporter:** Security Audit
+- **Priority:** Critical
+- **Status:** Fixed
+
+## Summary
+
+Transaction descriptions were being rendered using `dangerouslySetInnerHTML`, which allows unescaped HTML rendering. This creates a critical cross-site scripting (XSS) vulnerability that could allow attackers to execute malicious JavaScript code in users' browsers.
+
+---
+
+## How the Bug Was Found
+
+### Investigation Process
+
+1. **Code Review of Transaction Rendering**
+
+   - Examined `components/TransactionList.tsx` to see how transaction data is displayed
+   - Found on line 71: `<span dangerouslySetInnerHTML={{ __html: transaction.description }} />`
+   - Identified the use of React's `dangerouslySetInnerHTML` prop, which is a known XSS risk
+
+2. **Security Pattern Analysis**
+
+   - Searched the codebase for all instances of `dangerouslySetInnerHTML`
+   - Confirmed this was the only location using unsafe HTML rendering
+   - Verified that transaction descriptions come from the database and could contain user-controlled or malicious content
+
+3. **Attack Vector Identification**
+
+   - If a transaction description contains HTML/JavaScript (e.g., `<script>alert('XSS')</script>`), it would execute in users' browsers
+   - Malicious code could:
+     - Steal session cookies/tokens
+     - Perform actions on behalf of the user
+     - Redirect users to malicious sites
+     - Access sensitive data from the page
+
+4. **Verification**
+   - Tested by checking if React automatically escapes content when not using `dangerouslySetInnerHTML`
+   - Confirmed that React's default behavior safely escapes HTML entities
+
+---
+
+## Root Cause
+
+1. **Unsafe HTML Rendering:** Using `dangerouslySetInnerHTML` bypasses React's built-in XSS protection
+2. **No Input Sanitization:** Transaction descriptions are stored directly without HTML sanitization
+3. **Lack of Security Awareness:** The code used a dangerous React pattern without understanding the security implications
+4. **No Defense in Depth:** Relied on a single layer (database) rather than multiple security layers
+
+---
+
+## Impact
+
+- **XSS Attacks:** Malicious JavaScript can execute in users' browsers
+- **Session Hijacking:** Attackers could steal authentication tokens/cookies
+- **Data Theft:** Malicious scripts could access and exfiltrate sensitive user data
+- **Account Takeover:** Attackers could perform actions on behalf of authenticated users
+- **Compliance Violations:** OWASP Top 10 lists XSS as a critical security risk
+- **Reputation Damage:** Security breaches can damage user trust
+
+---
+
+## Solution
+
+### Implementation
+
+1. **Removed Unsafe HTML Rendering (`components/TransactionList.tsx`)**
+
+   - **Before:** `<span dangerouslySetInnerHTML={{ __html: transaction.description }} />`
+   - **After:** `{transaction.description ? transaction.description : "-"}`
+   - React automatically escapes HTML entities when rendering text content in JSX
+
+2. **How React's Auto-Escaping Works**
+
+   - When you render `{transaction.description}`, React treats it as text content
+   - HTML special characters (`<`, `>`, `&`, `"`, `'`) are automatically escaped
+   - Example: `<script>alert('XSS')</script>` becomes `&lt;script&gt;alert('XSS')&lt;/script&gt;`
+   - This prevents any HTML/JavaScript from being executed
+
+3. **Defense in Depth (Future Enhancement)**
+   - While React's auto-escaping is sufficient for this fix, additional layers could include:
+     - Server-side input validation/sanitization
+     - Content Security Policy (CSP) headers
+     - HTML sanitization library for cases where HTML is actually needed
+
+---
+
+## Testing
+
+Test cases have been created in `tests/xss-prevention.test.ts` to verify:
+
+- HTML tags are escaped and rendered as text
+- JavaScript code in descriptions does not execute
+- Special characters are properly escaped
+- Multiple XSS attack vectors are prevented
+- React's default escaping behavior works correctly
+
+**Run tests:**
+
+```bash
+npx tsx tests/xss-prevention.test.ts
+```
+
+---
+
+## Files Modified
+
+1. `components/TransactionList.tsx` - Removed `dangerouslySetInnerHTML`, using safe text rendering
+
+---
+
+## Verification
+
+To verify the fix:
+
+1. Transaction descriptions with HTML/JavaScript are now displayed as plain text
+2. Malicious scripts do not execute
+3. Special characters are properly escaped
+4. All XSS test cases pass
