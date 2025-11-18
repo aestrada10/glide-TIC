@@ -9,6 +9,7 @@ export const users = sqliteTable("users", {
   lastName: text("last_name").notNull(),
   phoneNumber: text("phone_number").notNull(),
   dateOfBirth: text("date_of_birth").notNull(),
+  // SSN is stored encrypted using AES-256-GCM (see lib/encryption.ts)
   ssn: text("ssn").notNull(),
   address: text("address").notNull(),
   city: text("city").notNull(),

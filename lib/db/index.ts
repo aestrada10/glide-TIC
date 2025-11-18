@@ -23,6 +23,7 @@ export function initDb() {
       last_name TEXT NOT NULL,
       phone_number TEXT NOT NULL,
       date_of_birth TEXT NOT NULL,
+      -- SSN is stored encrypted using AES-256-GCM (see lib/encryption.ts)
       ssn TEXT NOT NULL,
       address TEXT NOT NULL,
       city TEXT NOT NULL,
