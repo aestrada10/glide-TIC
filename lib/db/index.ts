@@ -20,6 +20,14 @@ const db = drizzle(getDatabase(), { schema });
 
 export { db };
 
+/**
+ * Gets the raw database connection for atomic operations
+ * Use this for operations that require atomic SQL updates
+ */
+export function getRawDatabase(): Database.Database {
+  return getDatabase();
+}
+
 export function initDb() {
   const database = getDatabase();
 

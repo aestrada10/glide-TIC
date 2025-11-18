@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { protectedProcedure, router } from "../trpc";
-import { db } from "@/lib/db";
+import { db, getRawDatabase } from "@/lib/db";
 import { accounts, transactions } from "@/lib/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 
 function generateAccountNumber(): string {
   return Math.floor(Math.random() * 1000000000)
@@ -109,36 +110,56 @@ export const accountRouter = router({
         });
       }
 
-      // Create transaction
-      await db.insert(transactions).values({
-        accountId: input.accountId,
-        type: "deposit",
-        amount,
-        description: `Funding from ${input.fundingSource.type}`,
-        status: "completed",
-        processedAt: new Date().toISOString(),
-      });
+      // Use database transaction for atomicity
+      const rawDb = getRawDatabase();
+      const transaction = rawDb.transaction(() => {
+        // Create transaction record
+        const insertStmt = rawDb.prepare(`
+          INSERT INTO transactions (account_id, type, amount, description, status, processed_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `);
+        
+        const processedAt = new Date().toISOString();
+        const result = insertStmt.run(
+          input.accountId,
+          "deposit",
+          amount,
+          `Funding from ${input.fundingSource.type}`,
+          "completed",
+          processedAt
+        );
 
-      // Fetch the created transaction
-      const transaction = await db.select().from(transactions).orderBy(transactions.createdAt).limit(1).get();
+        // Get the inserted transaction ID
+        const transactionId = result.lastInsertRowid;
 
-      // Update account balance
-      await db
-        .update(accounts)
-        .set({
-          balance: account.balance + amount,
-        })
-        .where(eq(accounts.id, input.accountId));
+        // Atomic balance update using SQL - prevents race conditions
+        // This ensures the balance update is atomic and thread-safe
+        const updateStmt = rawDb.prepare(`
+          UPDATE accounts 
+          SET balance = balance + ? 
+          WHERE id = ?
+        `);
+        updateStmt.run(amount, input.accountId);
 
-      let finalBalance = account.balance;
-      for (let i = 0; i < 100; i++) {
-        finalBalance = finalBalance + amount / 100;
-      }
+        // Fetch the created transaction
+        const transactionStmt = rawDb.prepare(`
+          SELECT * FROM transactions WHERE id = ?
+        `);
+        const transaction = transactionStmt.get(transactionId);
 
-      return {
-        transaction,
-        newBalance: finalBalance, // This will be slightly off due to float precision
-      };
+        // Fetch updated account balance
+        const accountStmt = rawDb.prepare(`
+          SELECT balance FROM accounts WHERE id = ?
+        `);
+        const updatedAccount = accountStmt.get(input.accountId) as { balance: number } | undefined;
+
+        return {
+          transaction,
+          newBalance: updatedAccount?.balance ?? account.balance + amount,
+        };
+      })();
+
+      return transaction;
     }),
 
   getTransactions: protectedProcedure
