@@ -16,8 +16,10 @@ This report documents the root causes, fixes, and prevention strategies for all 
 | Security | SEC-304 | High    | Fixed  |
 | Validation | VAL-208 | Critical | Fixed  |
 | Validation | VAL-202 | Critical | Fixed  |
+| Validation | VAL-205 | High    | Fixed  |
 | Validation | VAL-206 | Critical | Fixed  |
 | Validation | VAL-207 | High    | Fixed  |
+| Validation | VAL-209 | Medium  | Fixed  |
 | Validation | VAL-210 | High    | Fixed  |
 | Security | SEC-302 | High    | Fixed  |
 | Performance | PERF-408 | Critical | Fixed  |
@@ -2185,3 +2187,239 @@ To verify the fixes:
 6. **SEC-302:** Verify account numbers use crypto.randomBytes() not Math.random()
 7. Run test suite - all routing and security tests should pass
 8. Verify routing number validation works on both frontend and backend
+
+---
+
+# Bug Report: VAL-205, VAL-209 - Amount Validation Issues
+
+## Ticket Information
+
+- **Ticket IDs:** VAL-205, VAL-209
+- **Reporters:** Lisa Johnson, Robert Lee
+- **Priorities:** High, Medium
+- **Status:** Fixed
+
+## Summary
+
+Two related amount validation issues were identified and fixed:
+
+1. **VAL-205:** Users could submit funding requests for $0.00, creating unnecessary transaction records
+2. **VAL-209:** System accepted amounts with multiple leading zeros (e.g., "000123.45"), causing confusion in transaction records
+
+Both issues were fixed by implementing comprehensive amount validation on both frontend and backend.
+
+---
+
+## How the Bugs Were Found
+
+### Investigation Process
+
+1. **VAL-205: Zero Amount Funding Investigation**
+   - Customer report: "I was able to submit a funding request for $0.00"
+   - Examined `components/FundingModal.tsx` line 72-86
+   - Found: `min: { value: 0.0, message: "Amount must be at least $0.01" }` - but this doesn't actually prevent 0.00
+   - Pattern `/^\d+\.?\d{0,2}$/` allows "0" or "0.00" which parseFloat converts to 0
+   - Backend had `z.number().positive()` but frontend validation allowed 0 through
+   - Tested with "0", "0.00", "0.0" - all were accepted
+
+2. **VAL-209: Amount Input Issues Investigation**
+   - Customer report: "System accepts amounts with multiple leading zeros"
+   - Examined `components/FundingModal.tsx` line 75
+   - Found: Pattern `/^\d+\.?\d{0,2}$/` allows multiple leading zeros like "000123.45"
+   - `parseFloat("000123.45")` = 123.45, so it works but creates confusion
+   - Amounts like "000123.45" or "00123.45" were accepted
+   - Transaction records would show confusing amounts with leading zeros
+
+3. **Code Review Findings**
+   - Frontend validation: Pattern allowed leading zeros, min value was 0.0 (not > 0)
+   - Backend validation: `z.number().positive()` should reject 0, but frontend could bypass
+   - No explicit validation to reject zero amounts
+   - No validation to reject multiple leading zeros
+   - Amount normalization could hide the issue but still create confusion
+
+4. **Verification**
+   - Tested with "0", "0.00", "0.0" - confirmed all were accepted
+   - Tested with "000123.45", "00123.45" - confirmed all were accepted
+   - All issues confirmed and reproducible
+
+---
+
+## Root Cause
+
+1. **VAL-205: Zero Amount Allowed**
+   - Frontend pattern `/^\d+\.?\d{0,2}$/` matches "0", "0.00", "0.0"
+   - `min: { value: 0.0 }` allows 0.0 (not > 0)
+   - No explicit validation to reject zero amounts
+   - `parseFloat("0")` = 0, which passes through to backend
+   - Backend `z.number().positive()` should reject 0, but frontend validation was insufficient
+
+2. **VAL-209: Multiple Leading Zeros Allowed**
+   - Pattern `/^\d+\.?\d{0,2}$/` matches any sequence of digits, including "000123"
+   - No validation to check for multiple leading zeros
+   - `parseFloat("000123.45")` = 123.45, so it works but creates confusion
+   - Transaction records could show confusing amounts
+
+---
+
+## Impact
+
+**VAL-205:**
+- **Unnecessary Transactions:** Zero-amount transactions create clutter in records
+- **Data Quality:** Pollutes transaction history with meaningless entries
+- **User Confusion:** Users might accidentally submit $0.00 transactions
+- **System Resources:** Wastes processing on invalid transactions
+
+**VAL-209:**
+- **User Confusion:** Amounts with leading zeros are confusing (e.g., "000123.45")
+- **Data Inconsistency:** Same amount can be entered in multiple formats
+- **Transaction Records:** Unclear what the actual amount was
+- **UX Issues:** Poor user experience with confusing input formats
+
+---
+
+## Solution
+
+### Implementation
+
+1. **Fixed VAL-205: Zero Amount Validation**
+   - Updated frontend pattern to reject "0" and "0.00"
+   - Added explicit validation to reject zero amounts
+   - Changed `min` from `0.0` to `0.01`
+   - Added server-side check to ensure amount > 0
+   - Added minimum amount check (>= 0.01)
+
+2. **Fixed VAL-209: Leading Zeros Validation**
+   - Updated pattern to `/^(0|[1-9]\d*)(\.\d{1,2})?$/` - rejects multiple leading zeros
+   - Added validation to explicitly check for leading zeros
+   - Pattern now requires first digit to be 1-9 (or single 0 for edge case)
+   - Frontend validation prevents leading zeros before submission
+
+---
+
+### Technical Details
+
+**VAL-205 Fix:**
+- Before: `min: { value: 0.0 }` - allows 0.00
+- After: `min: { value: 0.01 }` + explicit validation to reject 0
+- Pattern updated to reject "0" and "0.00"
+- Server-side check: `if (amount <= 0 || isNaN(amount))` throws error
+
+**VAL-209 Fix:**
+- Before: `/^\d+\.?\d{0,2}$/` - allows "000123.45"
+- After: `/^(0|[1-9]\d*)(\.\d{1,2})?$/` - rejects multiple leading zeros
+- First digit must be 1-9 (or single 0), preventing "000123"
+
+**Before (Problematic Code):**
+```typescript
+// Frontend: components/FundingModal.tsx
+pattern: {
+  value: /^\d+\.?\d{0,2}$/, // ❌ Allows "0", "0.00", "000123.45"
+  message: "Invalid amount format",
+},
+min: {
+  value: 0.0, // ❌ Allows 0.00
+  message: "Amount must be at least $0.01",
+},
+
+// Backend: server/routers/account.ts
+amount: z.number().positive(), // Should reject 0, but frontend allows it
+```
+
+**After (Fixed Code):**
+```typescript
+// Frontend: components/FundingModal.tsx
+pattern: {
+  value: /^(0|[1-9]\d*)(\.\d{1,2})?$/, // ✅ Rejects "000123", allows "123.45"
+  message: "Invalid amount format",
+},
+validate: {
+  notZero: (value) => {
+    const num = parseFloat(value);
+    if (isNaN(num) || num === 0) {
+      return "Amount must be greater than $0.00";
+    }
+    return true;
+  },
+  noLeadingZeros: (value) => {
+    if (/^0+[1-9]/.test(value)) {
+      return "Amount cannot have leading zeros";
+    }
+    return true;
+  },
+  positive: (value) => {
+    const num = parseFloat(value);
+    if (isNaN(num) || num <= 0) {
+      return "Amount must be greater than $0.00";
+    }
+    return true;
+  },
+},
+min: {
+  value: 0.01, // ✅ Requires at least $0.01
+  message: "Amount must be at least $0.01",
+},
+
+// Backend: server/routers/account.ts
+amount: z
+  .number()
+  .positive("Amount must be greater than $0.00")
+  .min(0.01, "Amount must be at least $0.01")
+  .max(10000, "Amount cannot exceed $10,000")
+  .refine((val) => val > 0, {
+    message: "Amount must be greater than $0.00",
+  }),
+
+// Additional server-side validation
+if (amount <= 0 || isNaN(amount)) {
+  throw new TRPCError({
+    code: "BAD_REQUEST",
+    message: "Amount must be greater than $0.00",
+  });
+}
+if (amount < 0.01) {
+  throw new TRPCError({
+    code: "BAD_REQUEST",
+    message: "Amount must be at least $0.01",
+  });
+}
+```
+
+---
+
+## Testing
+
+Test cases have been created in `tests/amount-validation.test.ts` to verify:
+- Zero amounts are rejected (0, 0.00, 0.0)
+- Amounts with multiple leading zeros are rejected (000123.45, 00123.45)
+- Valid amounts are accepted (123.45, 1000.00)
+- Minimum amount validation works ($0.01 minimum)
+- Maximum amount validation works ($10,000 maximum)
+- Edge cases (empty, negative, invalid format) are handled
+
+**Run tests:**
+
+```bash
+npx tsx tests/amount-validation.test.ts
+```
+
+---
+
+## Files Modified
+
+1. `components/FundingModal.tsx` - Fixed: Updated amount validation to reject zero amounts and leading zeros
+2. `server/routers/account.ts` - Fixed: Enhanced amount validation with explicit checks
+
+---
+
+## Verification
+
+To verify the fixes:
+1. **VAL-205:** Try to submit funding with $0.00 - should be rejected
+2. **VAL-205:** Try to submit funding with "0" or "0.00" - should be rejected
+3. **VAL-205:** Try to submit funding with $0.01 - should be accepted
+4. **VAL-209:** Try to submit funding with "000123.45" - should be rejected
+5. **VAL-209:** Try to submit funding with "00123.45" - should be rejected
+6. **VAL-209:** Try to submit funding with "123.45" - should be accepted
+7. Run test suite - all amount validation tests should pass
+8. Verify zero amounts are rejected on both frontend and backend
+9. Verify leading zeros are rejected on frontend

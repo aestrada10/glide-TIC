@@ -84,7 +84,14 @@ export const accountRouter = router({
     .input(
       z.object({
         accountId: z.number(),
-        amount: z.number().positive(),
+        amount: z
+          .number()
+          .positive("Amount must be greater than $0.00")
+          .min(0.01, "Amount must be at least $0.01")
+          .max(10000, "Amount cannot exceed $10,000")
+          .refine((val) => val > 0, {
+            message: "Amount must be greater than $0.00",
+          }),
         fundingSource: z
           .object({
             type: z.enum(["card", "bank"]),
@@ -121,6 +128,22 @@ export const accountRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const amount = parseFloat(input.amount.toString());
+
+      // VAL-205 fix: Additional server-side check to prevent zero amounts
+      if (amount <= 0 || isNaN(amount)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Amount must be greater than $0.00",
+        });
+      }
+
+      // VAL-205 fix: Ensure amount is at least $0.01
+      if (amount < 0.01) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Amount must be at least $0.01",
+        });
+      }
 
       // Verify account belongs to user
       const account = await db

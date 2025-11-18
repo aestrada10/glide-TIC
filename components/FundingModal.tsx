@@ -72,11 +72,39 @@ export function FundingModal({ accountId, onClose, onSuccess }: FundingModalProp
                 {...register("amount", {
                   required: "Amount is required",
                   pattern: {
-                    value: /^\d+\.?\d{0,2}$/,
+                    // VAL-209 fix: Reject multiple leading zeros (but allow single "0" for edge case)
+                    value: /^(0|[1-9]\d*)(\.\d{1,2})?$/,
                     message: "Invalid amount format",
                   },
+                  validate: {
+                    // VAL-209 fix: Reject amounts with multiple leading zeros (check first)
+                    noLeadingZeros: (value) => {
+                      // Check if value has multiple leading zeros (e.g., "000123.45", "00.01")
+                      // Matches: "000123", "00123.45", "00.01", etc.
+                      if (/^0{2,}/.test(value) && value !== "0" && !value.startsWith("0.")) {
+                        return "Amount cannot have leading zeros";
+                      }
+                      return true;
+                    },
+                    // VAL-205 fix: Explicitly reject zero amounts
+                    notZero: (value) => {
+                      const num = parseFloat(value);
+                      if (isNaN(num) || num === 0) {
+                        return "Amount must be greater than $0.00";
+                      }
+                      return true;
+                    },
+                    // VAL-205 fix: Ensure amount is positive
+                    positive: (value) => {
+                      const num = parseFloat(value);
+                      if (isNaN(num) || num <= 0) {
+                        return "Amount must be greater than $0.00";
+                      }
+                      return true;
+                    },
+                  },
                   min: {
-                    value: 0.0,
+                    value: 0.01,
                     message: "Amount must be at least $0.01",
                   },
                   max: {
