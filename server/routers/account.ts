@@ -4,6 +4,7 @@ import { protectedProcedure, router } from "../trpc";
 import { db, getRawDatabase } from "@/lib/db";
 import { accounts, transactions } from "@/lib/db/schema";
 import { eq, and, desc } from "drizzle-orm";
+import { validateCardNumber } from "@/lib/card-validation";
 
 function generateAccountNumber(): string {
   return Math.floor(Math.random() * 1000000000)
@@ -104,6 +105,17 @@ export const accountRouter = router({
           code: "BAD_REQUEST",
           message: "Account is not active",
         });
+      }
+
+      // VAL-206 & VAL-210: Validate card number if funding source is a card
+      if (input.fundingSource.type === "card") {
+        const cardValidation = validateCardNumber(input.fundingSource.accountNumber);
+        if (!cardValidation.valid) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: cardValidation.errors.join(". "),
+          });
+        }
       }
 
       // Use database transaction for atomicity

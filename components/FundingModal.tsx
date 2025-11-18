@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { trpc } from "@/lib/trpc/client";
+import { validateCardNumber } from "@/lib/card-validation";
 
 interface FundingModalProps {
   accountId: number;
@@ -113,19 +114,24 @@ export function FundingModal({ accountId, onClose, onSuccess }: FundingModalProp
               {...register("accountNumber", {
                 required: `${fundingType === "card" ? "Card" : "Account"} number is required`,
                 pattern: {
-                  value: fundingType === "card" ? /^\d{16}$/ : /^\d+$/,
-                  message: fundingType === "card" ? "Card number must be 16 digits" : "Invalid account number",
+                  value: fundingType === "card" ? /^[\d\s-]+$/ : /^\d+$/,
+                  message: fundingType === "card" ? "Card number must contain only digits, spaces, or dashes" : "Invalid account number",
                 },
                 validate: {
                   validCard: (value) => {
                     if (fundingType !== "card") return true;
-                    return value.startsWith("4") || value.startsWith("5") || "Invalid card number";
+                    // VAL-206 & VAL-210: Use comprehensive card validation
+                    const validation = validateCardNumber(value);
+                    if (!validation.valid) {
+                      return validation.errors[0] || "Invalid card number";
+                    }
+                    return true;
                   },
                 },
               })}
               type="text"
               className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border"
-              placeholder={fundingType === "card" ? "1234567812345678" : "123456789"}
+              placeholder={fundingType === "card" ? "1234 5678 9012 3456" : "123456789"}
             />
             {errors.accountNumber && <p className="mt-1 text-sm text-red-600">{errors.accountNumber.message}</p>}
           </div>
