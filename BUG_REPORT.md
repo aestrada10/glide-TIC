@@ -19,6 +19,7 @@ This report documents the root causes, fixes, and prevention strategies for all 
 | Performance | PERF-406 | Critical | Fixed  |
 | Performance | PERF-405 | Critical | Fixed  |
 | Performance | PERF-404 | Medium  | Fixed  |
+| Performance | PERF-401 | Critical | Fixed  |
 
 Critical issues were prioritized first due to security/compliance risks and potential financial inaccuracies.
 
@@ -1281,3 +1282,214 @@ To verify the fix:
 2. Query transaction history multiple times
 3. Verify transactions are always in the same chronological order (newest first)
 4. Order should be consistent across all queries
+
+---
+
+# Bug Report: PERF-401 - Account Creation Error
+
+## Ticket Information
+
+- **Ticket ID:** PERF-401
+- **Reporter:** Support Team
+- **Priority:** Critical
+- **Status:** Fixed
+
+## Summary
+
+New accounts showed a $100 balance when database operations failed. The account creation code had a fallback that returned a fake account object with a hardcoded $100 balance if the account couldn't be fetched after creation. This caused incorrect balance displays and masked database errors.
+
+---
+
+## How the Bug Was Found
+
+### Investigation Process
+
+1. **Support Team Reports**
+   - Support team received reports of new accounts showing $100 balance
+   - Users reported seeing incorrect balances immediately after account creation
+   - Some accounts showed $100 when they should have $0
+
+2. **Code Review of Account Creation**
+   - Examined `server/routers/account.ts` line 57-67
+   - Found: Fallback code that returns a fake account object
+   - Lines 58-66: `account || { ... balance: 100, ... }`
+   - This fallback returned a hardcoded account with $100 balance when fetch failed
+
+3. **Database Operation Analysis**
+   - Account is inserted with `balance: 0` (line 50)
+   - Account is then fetched (line 55)
+   - If fetch fails, fallback returns fake account with `balance: 100`
+   - This creates a discrepancy between actual database state and returned data
+
+4. **Error Handling Review**
+   - Found that database errors were being masked
+   - Instead of throwing an error, the code returned fake data
+   - This made it difficult to diagnose actual database issues
+   - Users saw incorrect balances without knowing there was an error
+
+5. **Verification**
+   - Tested account creation with simulated database fetch failures
+   - Confirmed that fake account with $100 balance was returned
+   - Verified that actual database had account with $0 balance
+   - Confirmed the discrepancy between displayed and actual balance
+
+---
+
+## Root Cause
+
+1. **Fallback Returning Fake Data:**
+   - Lines 57-67 had a fallback: `account || { ... balance: 100, ... }`
+   - If account fetch failed, it returned a hardcoded account object
+   - The fake account had `balance: 100` instead of the actual `balance: 0`
+   - This created incorrect balance displays
+
+2. **Masking Database Errors:**
+   - Instead of throwing an error when fetch failed, code returned fake data
+   - Database errors were hidden from users and developers
+   - Made it difficult to diagnose actual problems
+   - Users saw incorrect data without knowing there was an error
+
+3. **Data Integrity Issues:**
+   - The returned account object didn't match the database
+   - Fake account had `id: 0`, `status: "pending"` while actual was `status: "active"`
+   - Created confusion about account state
+   - Could lead to further errors if the fake data was used
+
+4. **Incorrect Balance Display:**
+   - Users saw $100 balance when account actually had $0
+   - This violated data integrity principles
+   - Could cause financial discrepancies
+   - Users might make decisions based on incorrect balance
+
+---
+
+## Impact
+
+- **Incorrect Balance Displays:** Users saw $100 balance when account had $0
+- **Data Integrity Violations:** Returned data didn't match database state
+- **Masked Errors:** Database errors were hidden, making debugging difficult
+- **User Confusion:** Users didn't know there was an error, just saw wrong balance
+- **Financial Discrepancies:** Incorrect balances could lead to financial issues
+- **Trust Issues:** Users lost trust when balances were incorrect
+
+---
+
+## Solution
+
+### Implementation
+
+1. **Removed Fallback Fake Data (`server/routers/account.ts`)**
+   - Removed the fallback that returned fake account with $100 balance
+   - Changed from returning fake data to throwing proper error
+   - Ensures data integrity - only real account data is returned
+
+2. **Added Proper Error Handling**
+   - Added check: `if (!account) { throw new TRPCError(...) }`
+   - Throws `INTERNAL_SERVER_ERROR` if account can't be fetched
+   - Provides clear error message to users
+   - Makes database errors visible for debugging
+
+3. **Improved Data Integrity**
+   - Only returns accounts that actually exist in database
+   - Ensures returned data matches database state
+   - Prevents incorrect balance displays
+   - Maintains data consistency
+
+---
+
+### Technical Details
+
+**Error Handling:**
+
+- Before: Returned fake account object with hardcoded values
+- After: Throws proper error if account fetch fails
+- Error code: `INTERNAL_SERVER_ERROR`
+- Error message: "Account was created but could not be retrieved. Please try again."
+
+**Data Integrity:**
+
+- Before: Could return fake account with `balance: 100` when actual was `balance: 0`
+- After: Only returns real account data from database
+- Ensures consistency between database and API response
+
+**Before (Problematic Code):**
+```typescript
+await db.insert(accounts).values({
+  userId: ctx.user.id,
+  accountNumber: accountNumber!,
+  accountType: input.accountType,
+  balance: 0,  // Actual balance in DB
+  status: "active",
+});
+
+const account = await db.select()...get();
+
+return (
+  account || {
+    id: 0,
+    userId: ctx.user.id,
+    accountNumber: accountNumber!,
+    accountType: input.accountType,
+    balance: 100,  // WRONG! Fake balance
+    status: "pending",  // WRONG! Fake status
+    createdAt: new Date().toISOString(),
+  }
+);
+```
+
+**After (Fixed Code):**
+```typescript
+await db.insert(accounts).values({
+  userId: ctx.user.id,
+  accountNumber: accountNumber!,
+  accountType: input.accountType,
+  balance: 0,
+  status: "active",
+});
+
+const account = await db.select()...get();
+
+if (!account) {
+  throw new TRPCError({
+    code: "INTERNAL_SERVER_ERROR",
+    message: "Account was created but could not be retrieved. Please try again.",
+  });
+}
+
+return account;  // Only real account data
+```
+
+---
+
+## Testing
+
+Test cases have been created in `tests/account-creation.test.ts` to verify:
+- Account creation returns correct balance ($0)
+- Error is thrown if account fetch fails
+- No fake account data is returned
+- Data integrity is maintained
+- Proper error handling for database failures
+
+**Run tests:**
+
+```bash
+npx tsx tests/account-creation.test.ts
+```
+
+---
+
+## Files Modified
+
+1. `server/routers/account.ts` - Fixed: Removed fallback fake account, added proper error handling
+
+---
+
+## Verification
+
+To verify the fix:
+1. Create a new account - should show $0 balance (not $100)
+2. If database fetch fails, should throw error (not return fake account)
+3. Verify returned account data matches database
+4. Test error handling - should show clear error message
+5. Run test suite - all account creation tests should pass
+6. Verify no fake account objects are ever returned
