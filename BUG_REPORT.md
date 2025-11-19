@@ -1,7 +1,6 @@
 # 🐛 Bug Fix Documentation
 
 **Prepared by:** Aldo Estrada  
-**Project:** Support Engineer Interview Assignment
 
 This report documents the root causes, fixes, and prevention strategies for all identified issues across **UI, Validation, Security, and Performance**.
 
