@@ -6,6 +6,8 @@ import { useForm } from "react-hook-form";
 import { trpc } from "@/lib/trpc/client";
 import Link from "next/link";
 import { validateEmail } from "@/lib/email-validation";
+import { validateStateCode } from "@/lib/state-validation";
+import { validatePhoneNumber } from "@/lib/phone-validation";
 
 type SignupFormData = {
   email: string;
@@ -233,19 +235,33 @@ export default function SignupPage() {
                 <label htmlFor="phoneNumber" className="block text-sm font-medium text-gray-700">
                   Phone Number
                 </label>
-                <input
-                  {...register("phoneNumber", {
-                    required: "Phone number is required",
-                    pattern: {
-                      value: /^\d{10}$/,
-                      message: "Phone number must be 10 digits",
-                    },
-                  })}
-                  type="tel"
-                  placeholder="1234567890"
-                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border"
-                />
-                {errors.phoneNumber && <p className="mt-1 text-sm text-red-600">{errors.phoneNumber.message}</p>}
+                  <input
+                    {...register("phoneNumber", {
+                      required: "Phone number is required",
+                      validate: (value) => {
+                        const validation = validatePhoneNumber(value);
+                        if (!validation.valid) {
+                          return validation.errors[0] || "Invalid phone number";
+                        }
+                        return true;
+                      },
+                    })}
+                    type="tel"
+                    placeholder="+1234567890 or 1234567890"
+                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border"
+                  />
+                  {errors.phoneNumber && <p className="mt-1 text-sm text-red-600">{errors.phoneNumber.message}</p>}
+                  {watch("phoneNumber") && (() => {
+                    const validation = validatePhoneNumber(watch("phoneNumber"));
+                    if (validation.valid && validation.normalizedPhone && validation.normalizedPhone !== watch("phoneNumber").trim()) {
+                      return (
+                        <p className="mt-1 text-sm text-amber-600">
+                          Note: Phone number will be stored as "{validation.normalizedPhone}"
+                        </p>
+                      );
+                    }
+                    return null;
+                  })()}
               </div>
 
               <div>
@@ -354,14 +370,19 @@ export default function SignupPage() {
                   <input
                     {...register("state", {
                       required: "State is required",
-                      pattern: {
-                        value: /^[A-Z]{2}$/,
-                        message: "Use 2-letter state code",
+                      validate: (value) => {
+                        const validation = validateStateCode(value);
+                        if (!validation.valid) {
+                          return validation.errors[0] || "Invalid state code";
+                        }
+                        return true;
                       },
                     })}
                     type="text"
                     placeholder="CA"
-                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border"
+                    maxLength={2}
+                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border uppercase"
+                    style={{ textTransform: "uppercase" }}
                   />
                   {errors.state && <p className="mt-1 text-sm text-red-600">{errors.state.message}</p>}
                 </div>

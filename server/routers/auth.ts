@@ -10,6 +10,8 @@ import { encryptSSN } from "@/lib/encryption";
 import { validatePasswordStrength } from "@/lib/password-validation";
 import { validateDateOfBirth } from "@/lib/date-validation";
 import { validateEmail } from "@/lib/email-validation";
+import { validateStateCode } from "@/lib/state-validation";
+import { validatePhoneNumber } from "@/lib/phone-validation";
 
 export const authRouter = router({
   signup: publicProcedure
@@ -97,7 +99,23 @@ export const authRouter = router({
           ),
         firstName: z.string().min(1),
         lastName: z.string().min(1),
-        phoneNumber: z.string().regex(/^\+?\d{10,15}$/),
+        phoneNumber: z
+          .string()
+          .refine(
+            (val) => {
+              const validation = validatePhoneNumber(val);
+              return validation.valid;
+            },
+            (val) => {
+              const validation = validatePhoneNumber(val);
+              return { message: validation.errors[0] || "Invalid phone number" };
+            }
+          )
+          .transform((val) => {
+            // VAL-204 fix: Normalize phone number to E.164 format
+            const validation = validatePhoneNumber(val);
+            return validation.normalizedPhone || val;
+          }),
         dateOfBirth: z
           .string()
           .refine(
@@ -113,7 +131,22 @@ export const authRouter = router({
         ssn: z.string().regex(/^\d{9}$/),
         address: z.string().min(1),
         city: z.string().min(1),
-        state: z.string().length(2).toUpperCase(),
+        state: z
+          .string()
+          .refine(
+            (val) => {
+              const validation = validateStateCode(val);
+              return validation.valid;
+            },
+            (val) => {
+              const validation = validateStateCode(val);
+              return { message: validation.errors[0] || "Invalid state code" };
+            }
+          )
+          .transform((val) => {
+            // VAL-203 fix: Normalize to uppercase
+            return val.trim().toUpperCase();
+          }),
         zipCode: z.string().regex(/^\d{5}$/),
       })
     )
