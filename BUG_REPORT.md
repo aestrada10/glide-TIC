@@ -16,6 +16,7 @@ This report documents the root causes, fixes, and prevention strategies for all 
 | Security | SEC-304 | High    | Fixed  |
 | Validation | VAL-208 | Critical | Fixed  |
 | Validation | VAL-202 | Critical | Fixed  |
+| Validation | VAL-201 | High    | Fixed  |
 | Validation | VAL-205 | High    | Fixed  |
 | Validation | VAL-206 | Critical | Fixed  |
 | Validation | VAL-207 | High    | Fixed  |
@@ -2610,3 +2611,239 @@ To verify the fixes:
 6. Run test suite - all performance tests should pass
 7. Monitor query execution times - should be significantly faster
 8. Verify indexes are used in query plans
+
+---
+
+# Bug Report: VAL-201 - Email Validation Problems
+
+## Ticket Information
+
+- **Ticket ID:** VAL-201
+- **Reporter:** James Wilson
+- **Priority:** High
+- **Status:** Fixed
+
+## Summary
+
+The system accepted invalid email formats and didn't handle special cases properly. Issues included:
+1. Accepts "TEST@example.com" but converts to lowercase without notifying user
+2. No validation for common typos like ".con" instead of ".com"
+3. Weak email format validation using basic regex pattern
+
+The issue was fixed by implementing comprehensive email validation with typo detection and user notification for normalization.
+
+---
+
+## How the Bug Was Found
+
+### Investigation Process
+
+1. **User Report**
+   - Customer report: "The system accepts invalid email formats and doesn't handle special cases properly"
+   - Examples provided:
+     - Accepts "TEST@example.com" but converts to lowercase without notifying user
+     - No validation for common typos like ".con" instead of ".com"
+
+2. **Code Review**
+   - Examined `app/signup/page.tsx` line 83-88
+   - Found: Basic pattern `/^\S+@\S+$/i` - too permissive, accepts many invalid formats
+   - Examined `server/routers/auth.ts` line 17
+   - Found: `z.string().email().toLowerCase()` - silently converts to lowercase without notification
+   - No validation for common TLD typos
+
+3. **Validation Analysis**
+   - Frontend pattern `/^\S+@\S+$/i` accepts:
+     - "test@example" (no TLD)
+     - "test@@example.com" (multiple @)
+     - "test@example.con" (typo in TLD)
+     - "test@example..com" (consecutive dots)
+   - Backend uses Zod's `.email()` which is better but still doesn't catch typos
+   - No user notification when email is normalized to lowercase
+
+4. **Testing**
+   - Tested with "TEST@example.com" - confirmed silent lowercase conversion
+   - Tested with "test@example.con" - confirmed it was accepted
+   - Tested with "test@example..com" - confirmed it was accepted
+   - All issues confirmed and reproducible
+
+---
+
+## Root Cause
+
+1. **Weak Email Format Validation**
+   - Frontend pattern `/^\S+@\S+$/i` is too permissive
+   - Only checks for non-whitespace characters before and after @
+   - Doesn't validate TLD, domain structure, or common typos
+   - Backend uses Zod's `.email()` which is better but still doesn't catch typos
+
+2. **Silent Lowercase Conversion**
+   - `z.string().email().toLowerCase()` silently converts emails
+   - User enters "TEST@example.com" but it's stored as "test@example.com"
+   - No notification to user about the change
+   - Can cause confusion if user expects case-sensitive email
+
+3. **No Typo Detection**
+   - No validation for common TLD typos (e.g., ".con", ".cmo" instead of ".com")
+   - No suggestions for likely typos
+   - Users may not realize they made a typo until later
+
+---
+
+## Impact
+
+- **User Confusion:** Emails converted to lowercase without notification
+- **Invalid Emails:** System accepts emails with typos (e.g., ".con" instead of ".com")
+- **Poor UX:** Users don't get feedback about email format issues
+- **Data Quality:** Invalid or incorrectly formatted emails in database
+- **Support Burden:** Users may contact support about email issues
+
+---
+
+## Solution
+
+### Implementation
+
+1. **Created Email Validation Utility (`lib/email-validation.ts`)**
+   - Comprehensive email format validation using RFC 5322 compliant regex
+   - Typo detection for common TLD mistakes (e.g., ".con" → ".com")
+   - Normalization tracking to detect when email is converted to lowercase
+   - Returns detailed validation results with errors and suggestions
+
+2. **Updated Backend Validation (`server/routers/auth.ts`)**
+   - Replaced basic `.email().toLowerCase()` with comprehensive validation
+   - Uses `validateEmail()` utility for strict format checking
+   - Validates email before normalization
+   - Returns clear error messages for invalid emails
+   - Handles typo suggestions
+
+3. **Updated Frontend Validation (`app/signup/page.tsx`, `app/login/page.tsx`)**
+   - Replaced basic pattern with comprehensive validation
+   - Shows notification when email will be normalized to lowercase
+   - Shows typo suggestions (e.g., "Did you mean test@example.com?")
+   - Real-time validation feedback
+
+---
+
+### Technical Details
+
+**Email Validation Utility:**
+- RFC 5322 compliant regex for format validation
+- Checks for consecutive dots, leading/trailing dots
+- Validates local part length (max 64 characters)
+- Validates domain length (max 255 characters)
+- Checks for common TLD typos and suggests fixes
+- Tracks normalization (lowercase conversion)
+
+**Common TLD Typos Detected:**
+- `.con` → `.com`
+- `.cmo` → `.com`
+- `.cm` → `.com`
+- `.comm` → `.com`
+- `.om` → `.com`
+- `.c0m` → `.com`
+- `.ocm` → `.com`
+- `.nte` → `.net`
+- `.ent` → `.net`
+- `.ogr` → `.org`
+- `.rog` → `.org`
+
+**Before (Problematic Code):**
+```typescript
+// Frontend: app/signup/page.tsx
+pattern: {
+  value: /^\S+@\S+$/i, // ❌ Too permissive
+  message: "Invalid email address",
+},
+
+// Backend: server/routers/auth.ts
+email: z.string().email().toLowerCase(), // ❌ Silent conversion, no typo detection
+```
+
+**After (Fixed Code):**
+```typescript
+// Frontend: app/signup/page.tsx
+validate: (value) => {
+  const validation = validateEmail(value);
+  if (!validation.valid) {
+    return validation.errors[0] || "Invalid email address";
+  }
+  return true;
+},
+// Shows notification if email will be normalized
+{validation.wasNormalized && (
+  <p>Note: Your email will be stored as "{validation.normalizedEmail}" (lowercase)</p>
+)}
+// Shows typo suggestions
+{validation.errors[0]?.includes("Did you mean") && (
+  <p>{validation.errors[0]}</p>
+)}
+
+// Backend: server/routers/auth.ts
+email: z
+  .string()
+  .refine(
+    (val) => {
+      const validation = validateEmail(val);
+      return validation.valid;
+    },
+    (val) => {
+      const validation = validateEmail(val);
+      return { message: validation.errors[0] || "Invalid email address" };
+    }
+  )
+  .transform((val) => {
+    const validation = validateEmail(val);
+    return validation.normalizedEmail || val.toLowerCase();
+  }),
+
+// Additional validation in mutation
+const emailValidation = validateEmail(input.email);
+if (!emailValidation.valid) {
+  throw new TRPCError({
+    code: "BAD_REQUEST",
+    message: emailValidation.errors[0] || "Invalid email address",
+  });
+}
+const normalizedEmail = emailValidation.normalizedEmail || input.email.toLowerCase();
+```
+
+---
+
+## Testing
+
+Test cases have been created in `tests/email-validation.test.ts` to verify:
+- Invalid email formats are rejected
+- Common typos are detected and suggestions provided
+- Email normalization is tracked and reported
+- Valid emails are accepted
+- Edge cases (consecutive dots, multiple @, etc.) are handled
+- TLD validation works correctly
+
+**Run tests:**
+
+```bash
+npx tsx tests/email-validation.test.ts
+```
+
+---
+
+## Files Modified
+
+1. `lib/email-validation.ts` - Created: Comprehensive email validation utility
+2. `server/routers/auth.ts` - Fixed: Enhanced email validation with typo detection
+3. `app/signup/page.tsx` - Fixed: Improved frontend validation with user notifications
+4. `app/login/page.tsx` - Fixed: Improved frontend validation
+
+---
+
+## Verification
+
+To verify the fixes:
+1. **VAL-201:** Try entering "TEST@example.com" - should show notification about lowercase conversion
+2. **VAL-201:** Try entering "test@example.con" - should suggest "test@example.com"
+3. **VAL-201:** Try entering "test@example..com" - should be rejected
+4. **VAL-201:** Try entering "test@@example.com" - should be rejected
+5. **VAL-201:** Try entering valid email - should be accepted
+6. Run test suite - all email validation tests should pass
+7. Verify user notifications appear for normalization
+8. Verify typo suggestions appear for common mistakes

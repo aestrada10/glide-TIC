@@ -9,12 +9,29 @@ import { eq, and } from "drizzle-orm";
 import { encryptSSN } from "@/lib/encryption";
 import { validatePasswordStrength } from "@/lib/password-validation";
 import { validateDateOfBirth } from "@/lib/date-validation";
+import { validateEmail } from "@/lib/email-validation";
 
 export const authRouter = router({
   signup: publicProcedure
     .input(
       z.object({
-        email: z.string().email().toLowerCase(),
+        email: z
+          .string()
+          .refine(
+            (val) => {
+              const validation = validateEmail(val);
+              return validation.valid;
+            },
+            (val) => {
+              const validation = validateEmail(val);
+              return { message: validation.errors[0] || "Invalid email address" };
+            }
+          )
+          .transform((val) => {
+            // VAL-201 fix: Normalize to lowercase and notify if changed
+            const validation = validateEmail(val);
+            return validation.normalizedEmail || val.toLowerCase();
+          }),
         password: z
           .string()
           .min(8, "Password must be at least 8 characters long")
@@ -100,8 +117,20 @@ export const authRouter = router({
         zipCode: z.string().regex(/^\d{5}$/),
       })
     )
-    .mutation(async ({ input, ctx }) => {
-      const existingUser = await db.select().from(users).where(eq(users.email, input.email)).get();
+          .mutation(async ({ input, ctx }) => {
+            // VAL-201 fix: Validate email and check for normalization
+            const emailValidation = validateEmail(input.email);
+            if (!emailValidation.valid) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: emailValidation.errors[0] || "Invalid email address",
+              });
+            }
+
+            // Use normalized email
+            const normalizedEmail = emailValidation.normalizedEmail || input.email.toLowerCase();
+
+            const existingUser = await db.select().from(users).where(eq(users.email, normalizedEmail)).get();
 
       if (existingUser) {
         throw new TRPCError({
@@ -115,12 +144,13 @@ export const authRouter = router({
 
       await db.insert(users).values({
         ...input,
+        email: normalizedEmail, // VAL-201 fix: Use normalized email
         password: hashedPassword,
         ssn: encryptedSSN,
       });
 
       // Fetch the created user
-      const user = await db.select().from(users).where(eq(users.email, input.email)).get();
+      const user = await db.select().from(users).where(eq(users.email, normalizedEmail)).get();
 
       if (!user) {
         throw new TRPCError({
@@ -155,15 +185,33 @@ export const authRouter = router({
       return { user: safeUser, token };
     }),
 
-  login: publicProcedure
-    .input(
-      z.object({
-        email: z.string().email(),
-        password: z.string(),
-      })
-    )
-    .mutation(async ({ input, ctx }) => {
-      const user = await db.select().from(users).where(eq(users.email, input.email)).get();
+        login: publicProcedure
+          .input(
+            z.object({
+              email: z
+                .string()
+                .refine(
+                  (val) => {
+                    const validation = validateEmail(val);
+                    return validation.valid;
+                  },
+                  (val) => {
+                    const validation = validateEmail(val);
+                    return { message: validation.errors[0] || "Invalid email address" };
+                  }
+                )
+                .transform((val) => {
+                  // VAL-201 fix: Normalize to lowercase
+                  const validation = validateEmail(val);
+                  return validation.normalizedEmail || val.toLowerCase();
+                }),
+              password: z.string(),
+            })
+          )
+          .mutation(async ({ input, ctx }) => {
+            // VAL-201 fix: Use normalized email for lookup
+            const normalizedEmail = input.email.toLowerCase();
+            const user = await db.select().from(users).where(eq(users.email, normalizedEmail)).get();
 
       if (!user) {
         throw new TRPCError({

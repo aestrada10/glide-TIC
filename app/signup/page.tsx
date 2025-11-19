@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { trpc } from "@/lib/trpc/client";
 import Link from "next/link";
+import { validateEmail } from "@/lib/email-validation";
 
 type SignupFormData = {
   email: string;
@@ -82,15 +83,39 @@ export default function SignupPage() {
                 <input
                   {...register("email", {
                     required: "Email is required",
-                    pattern: {
-                      value: /^\S+@\S+$/i,
-                      message: "Invalid email address",
+                    validate: (value) => {
+                      const validation = validateEmail(value);
+                      if (!validation.valid) {
+                        return validation.errors[0] || "Invalid email address";
+                      }
+                      // VAL-201 fix: Notify user if email will be normalized
+                      if (validation.wasNormalized) {
+                        // Show a warning but don't block submission
+                        // The backend will handle normalization
+                      }
+                      return true;
                     },
                   })}
                   type="email"
                   className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border"
                 />
                 {errors.email && <p className="mt-1 text-sm text-red-600">{errors.email.message}</p>}
+                {watch("email") && (() => {
+                  const validation = validateEmail(watch("email"));
+                  if (validation.wasNormalized && validation.valid) {
+                    return (
+                      <p className="mt-1 text-sm text-amber-600">
+                        Note: Your email will be stored as "{validation.normalizedEmail}" (lowercase)
+                      </p>
+                    );
+                  }
+                  if (validation.errors.length > 0 && validation.errors[0].includes("Did you mean")) {
+                    return (
+                      <p className="mt-1 text-sm text-amber-600">{validation.errors[0]}</p>
+                    );
+                  }
+                  return null;
+                })()}
               </div>
 
               <div>

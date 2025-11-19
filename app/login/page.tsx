@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { trpc } from "@/lib/trpc/client";
 import Link from "next/link";
+import { validateEmail } from "@/lib/email-validation";
 
 type LoginFormData = {
   email: string;
@@ -19,6 +20,7 @@ export default function LoginPage() {
     register,
     handleSubmit,
     formState: { errors },
+    watch,
   } = useForm<LoginFormData>();
   const loginMutation = trpc.auth.login.useMutation();
 
@@ -48,15 +50,27 @@ export default function LoginPage() {
               <input
                 {...register("email", {
                   required: "Email is required",
-                  pattern: {
-                    value: /^\S+@\S+$/i,
-                    message: "Invalid email address",
+                  validate: (value) => {
+                    const validation = validateEmail(value);
+                    if (!validation.valid) {
+                      return validation.errors[0] || "Invalid email address";
+                    }
+                    return true;
                   },
                 })}
                 type="email"
                 className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border"
               />
               {errors.email && <p className="mt-1 text-sm text-red-600">{errors.email.message}</p>}
+              {watch("email") && (() => {
+                const validation = validateEmail(watch("email"));
+                if (validation.errors.length > 0 && validation.errors[0].includes("Did you mean")) {
+                  return (
+                    <p className="mt-1 text-sm text-amber-600">{validation.errors[0]}</p>
+                  );
+                }
+                return null;
+              })()}
             </div>
 
             <div>
