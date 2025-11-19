@@ -23,6 +23,7 @@ This report documents the root causes, fixes, and prevention strategies for all 
 | Validation | VAL-210 | High    | Fixed  |
 | Security | SEC-302 | High    | Fixed  |
 | Performance | PERF-408 | Critical | Fixed  |
+| Performance | PERF-407 | High    | Fixed  |
 | Performance | PERF-406 | Critical | Fixed  |
 | Performance | PERF-405 | Critical | Fixed  |
 | Performance | PERF-404 | Medium  | Fixed  |
@@ -2423,3 +2424,189 @@ To verify the fixes:
 7. Run test suite - all amount validation tests should pass
 8. Verify zero amounts are rejected on both frontend and backend
 9. Verify leading zeros are rejected on frontend
+
+---
+
+# Bug Report: PERF-407 - Performance Degradation
+
+## Ticket Information
+
+- **Ticket ID:** PERF-407
+- **Reporter:** DevOps
+- **Priority:** High
+- **Status:** Fixed
+
+## Summary
+
+System performance degraded significantly when processing multiple transactions. Queries were slow because database indexes were missing on frequently queried columns, causing full table scans as the number of transactions grew.
+
+The issue was fixed by adding strategic database indexes on columns used in WHERE clauses and ORDER BY operations.
+
+---
+
+## How the Bug Was Found
+
+### Investigation Process
+
+1. **Performance Monitoring**
+   - DevOps team reported system slowdowns during peak usage
+   - Response times increased significantly when processing multiple transactions
+   - Users experienced delays when viewing transaction history
+   - System became slower as transaction volume grew
+
+2. **Query Analysis**
+   - Examined `server/routers/account.ts` line 271-275
+   - Found: `getTransactions` query uses `where(eq(transactions.accountId, input.accountId))` and `orderBy(desc(transactions.createdAt))`
+   - No database indexes on `transactions.account_id` or `transactions.created_at`
+   - SQLite was performing full table scans for every query
+
+3. **Database Schema Review**
+   - Examined `lib/db/index.ts` line 35-80
+   - Found: No `CREATE INDEX` statements in database initialization
+   - Tables created but no indexes defined
+   - All queries were doing full table scans
+
+4. **Query Pattern Analysis**
+   - `getTransactions`: Queries by `account_id` and orders by `created_at` - no indexes
+   - `createAccount`: Queries by `user_id` and `account_type` - no indexes
+   - `fundAccount`: Queries by `account_id` - no indexes
+   - Session lookups: Queries by `user_id` and `token` - no indexes
+   - All queries degraded linearly with data growth
+
+5. **Performance Testing**
+   - Tested with 100 transactions - acceptable performance
+   - Tested with 1,000 transactions - noticeable slowdown
+   - Tested with 10,000 transactions - significant degradation
+   - Confirmed O(n) query time without indexes
+
+---
+
+## Root Cause
+
+**Missing Database Indexes:**
+- No indexes on `transactions.account_id` - full table scan for every transaction lookup
+- No indexes on `transactions.created_at` - full table scan for every ORDER BY operation
+- No indexes on `accounts.user_id` - full table scan for account lookups
+- No indexes on `sessions.user_id` - full table scan for session lookups
+- No composite indexes for common query patterns
+
+**Performance Impact:**
+- Without indexes, SQLite must scan every row in the table
+- Query time grows linearly with table size: O(n)
+- With indexes, query time is logarithmic: O(log n)
+- As transaction volume grows, performance degrades significantly
+
+**Example:**
+- 1,000 transactions: ~1,000 row scans per query
+- 10,000 transactions: ~10,000 row scans per query
+- 100,000 transactions: ~100,000 row scans per query
+
+---
+
+## Impact
+
+- **Poor User Experience:** Slow response times during peak usage
+- **Scalability Issues:** Performance degrades as data grows
+- **System Slowdown:** Multiple concurrent transactions cause system-wide slowdown
+- **Resource Waste:** CPU and I/O wasted on inefficient full table scans
+- **Business Impact:** Users may abandon the system due to poor performance
+
+---
+
+## Solution
+
+### Implementation
+
+1. **Added Strategic Database Indexes (`lib/db/index.ts`)**
+   - Index on `transactions.account_id` for fast account lookups
+   - Index on `transactions.created_at` for fast date ordering
+   - Composite index on `transactions(account_id, created_at)` for common query pattern
+   - Index on `accounts.user_id` for fast user account lookups
+   - Composite index on `accounts(user_id, account_type)` for account type checks
+   - Index on `sessions.user_id` for fast session lookups
+   - Index on `sessions.token` for fast token lookups
+   - Index on `sessions.expires_at` for fast expiry checks
+
+---
+
+### Technical Details
+
+**Index Strategy:**
+- **Single-column indexes:** For WHERE clause lookups (account_id, user_id, token)
+- **Composite indexes:** For queries with multiple conditions (account_id + created_at)
+- **Covering indexes:** Indexes that include all columns needed for a query
+
+**Query Performance Improvement:**
+- Before: O(n) - full table scan
+- After: O(log n) - index lookup
+- Example: 10,000 rows
+  - Before: ~10,000 row scans
+  - After: ~13-14 index lookups (log₂(10000) ≈ 13.3)
+
+**Before (Problematic Code):**
+```sql
+-- No indexes created
+-- Queries had to scan entire tables
+SELECT * FROM transactions WHERE account_id = ? ORDER BY created_at DESC;
+-- Full table scan: O(n) - scans all rows
+```
+
+**After (Fixed Code):**
+```sql
+-- Indexes created for fast lookups
+CREATE INDEX IF NOT EXISTS idx_transactions_account_id ON transactions(account_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions(created_at);
+CREATE INDEX IF NOT EXISTS idx_transactions_account_created ON transactions(account_id, created_at);
+
+-- Queries now use indexes
+SELECT * FROM transactions WHERE account_id = ? ORDER BY created_at DESC;
+-- Index lookup: O(log n) - uses index to find rows quickly
+```
+
+**Indexes Created:**
+1. `idx_transactions_account_id` - Fast lookups by account
+2. `idx_transactions_created_at` - Fast ordering by date
+3. `idx_transactions_account_created` - Composite index for common query pattern
+4. `idx_accounts_user_id` - Fast account lookups by user
+5. `idx_accounts_user_type` - Fast account type checks
+6. `idx_sessions_user_id` - Fast session lookups by user
+7. `idx_sessions_token` - Fast token lookups
+8. `idx_sessions_expires_at` - Fast expiry checks
+
+---
+
+## Testing
+
+Test cases have been created in `tests/performance-indexes.test.ts` to verify:
+- Indexes are created correctly
+- Query performance improves with indexes
+- Transaction queries use indexes efficiently
+- Account lookups use indexes
+- Session lookups use indexes
+- Performance scales well with large datasets
+
+**Run tests:**
+
+```bash
+npx tsx tests/performance-indexes.test.ts
+```
+
+---
+
+## Files Modified
+
+1. `lib/db/index.ts` - Fixed: Added database indexes for frequently queried columns
+
+---
+
+## Verification
+
+To verify the fixes:
+1. **PERF-407:** Check that indexes are created in the database
+2. **PERF-407:** Test query performance with large transaction volumes
+3. **PERF-407:** Verify queries use indexes (check EXPLAIN QUERY PLAN)
+4. **PERF-407:** Test system performance with 1,000+ transactions
+5. **PERF-407:** Verify response times remain acceptable during peak usage
+6. Run test suite - all performance tests should pass
+7. Monitor query execution times - should be significantly faster
+8. Verify indexes are used in query plans

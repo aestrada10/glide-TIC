@@ -77,6 +77,31 @@ export function initDb() {
       expires_at TEXT NOT NULL,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
+
+    -- PERF-407 fix: Create indexes for frequently queried columns to improve performance
+    -- Index on transactions.account_id for fast lookups by account
+    CREATE INDEX IF NOT EXISTS idx_transactions_account_id ON transactions(account_id);
+    
+    -- Index on transactions.created_at for fast ordering by date
+    CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions(created_at);
+    
+    -- Composite index for common query pattern: account_id + created_at (for getTransactions)
+    CREATE INDEX IF NOT EXISTS idx_transactions_account_created ON transactions(account_id, created_at);
+    
+    -- Index on accounts.user_id for fast account lookups by user
+    CREATE INDEX IF NOT EXISTS idx_accounts_user_id ON accounts(user_id);
+    
+    -- Index on accounts.user_id + account_type for checking existing accounts
+    CREATE INDEX IF NOT EXISTS idx_accounts_user_type ON accounts(user_id, account_type);
+    
+    -- Index on sessions.user_id for fast session lookups by user
+    CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+    
+    -- Index on sessions.token for fast token lookups (though UNIQUE constraint helps)
+    CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
+    
+    -- Index on sessions.expires_at for fast expiry checks
+    CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
   `);
 }
 
